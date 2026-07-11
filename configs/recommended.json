@@ -1,0 +1,107 @@
+{
+  "input": {
+    "source": "webcam",
+    "video_path": "Video Database\\Sub 03.avi",
+    "loop_file": true
+  },
+  "runtime": {
+    "fps": 30.0,
+    "warmup_seconds": 3.0,
+    "calibration_frames": 60,
+    "max_frames": 0
+  },
+  "thresholds": {
+    "ear_default": 0.23,
+    "ear_calibration_factor": 0.65,
+    "ear_min": 0.15,
+    "ear_max": 0.35,
+    "mar": 0.5,
+    "pitch": 20.0,
+    "head_yaw": 30.0,
+    "head_nod_frames": 30,
+    "blink_freq": 10,
+    "yawn_frames": 20,
+    "max_yawns_window": 3,
+    "gaze_move": 1.5
+  },
+  "windows": {
+    "perclos_seconds": 60.0,
+    "perclos_short_seconds": 6.0,
+    "yawn_window_seconds": 60.0,
+    "blink_window_seconds": 10.0
+  },
+  "alerts": {
+    "drowsy_cooldown_seconds": 15.0
+  },
+  "camera_model": {
+    "model_path": "models/camera_hybrid_winner.joblib",
+    "window_seconds": 60.0,
+    "min_window_seconds": 5.0,
+    "min_frames": 5,
+    "probability_threshold": 0.55,
+    "suppress_warmup_alerts": true
+  },
+  "hybrid_policy": {
+    "fsm_safety_min_state": "CRITICAL",
+    "fsm_safety_cap_state": "SUSPICIOUS",
+    "critical_probability_threshold": 0.85,
+    "critical_severe_streak": 2,
+    "elevated_streak_threshold": 3,
+    "recovery_clean_streak": 3,
+    "post_rule_order": "rescue_then_suppress",
+    "clean_max_base_fsm_evidence": 0.2,
+    "clean_max_perclos_short": 0.15,
+    "clean_max_eyes_closed_consecutive": 1,
+    "clean_max_yawn_count": 0.0,
+    "clean_max_head_drop_count": 0.0,
+    "clean_max_eye_closed_duration_sec": 0.25,
+    "recent_min_base_fsm_evidence": 0.35,
+    "recent_min_max_fsm_evidence": 0.35,
+    "recent_min_perclos_short": 0.2,
+    "recent_min_eyes_closed_consecutive": 3,
+    "recent_min_max_eye_closed_duration_sec": 0.5,
+    "severe_min_perclos_short": 0.6,
+    "severe_min_eyes_closed_consecutive": 10,
+    "severe_min_max_eye_closed_duration_sec": 2.0,
+    "severe_min_max_fsm_evidence": 0.6,
+    "severe_combined_min_base_fsm_evidence": 0.6,
+    "severe_combined_min_perclos_long": 0.35,
+    "subtle_rescue": {
+      "enabled": true,
+      "probability_low": 0.45,
+      "probability_high": 0.52,
+      "ear_std_min": 0.055,
+      "ear_p10_max": 0.1,
+      "head_drop_max": 0
+    },
+    "fp_suppression": {
+      "enabled": true,
+      "probability_high": 0.45,
+      "head_drop_min": 500,
+      "maxeye_max": 1.0
+    },
+    "seeded_macroevent_bridge": {
+      "enabled": true,
+      "probability_min": 0.42,
+      "head_drop_min": 400.0,
+      "max_mar_min": 0.15,
+      "min_seed_hits": 2,
+      "bridge_perclos_max": 0.3,
+      "bridge_maxeye_max": 1.0,
+      "bridge_mean_mar_min": 0.005,
+      "bridge_min_max_fsm_evidence": 0.35,
+      "target_state": "DROWSY",
+      "alert_sound_override": "none",
+      "active_seconds": 240.0
+    }
+  },
+  "runtime_log": {
+    "enabled": false,
+    "path": ""
+  },
+  "feature_backend": "phuong",
+  "decision_engine": "camera_hybrid",
+  "enable_legacy_feature_overlay": false,
+  "display_window": false,
+  "log_every_n_frames": 100
+}

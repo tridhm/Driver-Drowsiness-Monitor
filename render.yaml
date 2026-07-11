@@ -1,6 +1,17 @@
 services:
   - type: web
-    name: dms-mobile-realtime
-    env: python
-    buildCommand: pip install -r requirements.txt
+    name: driver-drowsiness-monitor-winner
+    runtime: python
+    plan: free
+    region: singapore
+    branch: main
+    buildCommand: python -m pip install --upgrade pip && python -m pip install -r requirements.txt
     startCommand: gunicorn web_server:app --bind 0.0.0.0:$PORT --workers 1 --threads 4 --timeout 120
+    healthCheckPath: /api/healthz
+    autoDeployTrigger: checksPass
+    maxShutdownDelaySeconds: 30
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.10
+      - key: DMS_RUNTIME_PROFILE
+        value: recommended

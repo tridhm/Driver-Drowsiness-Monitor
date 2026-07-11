@@ -1,16 +1,18 @@
 from __future__ import annotations
 
 from runtime.config import RuntimeConfig
+from runtime.engines.camera_hybrid_engine import CameraHybridDecisionEngine
 from runtime.engines.base import DecisionEngine
+from runtime.engines.camera_model_engine import CameraModelDecisionEngine
 from runtime.engines.fsm_engine import FSMDecisionEngine
 from runtime.engines.legacy_engine import LegacyRuleEngine
-from runtime.engines.ml_engine import MLDecisionEngine
 
 
 ENGINE_REGISTRY: dict[str, type[DecisionEngine]] = {
+    "camera_hybrid": CameraHybridDecisionEngine,
+    "camera_model": CameraModelDecisionEngine,
     "fsm": FSMDecisionEngine,
     "legacy": LegacyRuleEngine,
-    "ml": MLDecisionEngine,
 }
 
 

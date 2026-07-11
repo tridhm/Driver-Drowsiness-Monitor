@@ -1,0 +1,88 @@
+{
+  "profile": "recommended",
+  "sessions": 3,
+  "logical_duration_seconds_per_session": 300,
+  "input_fps": 10,
+  "batch_size": 4,
+  "elapsed_wall_seconds": 230.65434630001255,
+  "rate_limit_note": "Raised only for accelerated logical-time replay; API tests cover production limits.",
+  "results": [
+    {
+      "worker": 0,
+      "requests": 750,
+      "p95_seconds": 0.49006930000905413,
+      "max_seconds": 0.9849862999981269,
+      "http_statuses": [
+        200
+      ],
+      "summary": {
+        "audio_command_counts": {
+          "none": 8998
+        },
+        "input_frames": 3000,
+        "profile": "recommended",
+        "reason": "closed",
+        "session_id": "04835b00-1980-4d38-9a68-cd8391356132",
+        "source_mode": "file",
+        "state_counts": {
+          "ALERT": 8998
+        },
+        "target_fps": 10,
+        "virtual_frames": 8998
+      }
+    },
+    {
+      "worker": 1,
+      "requests": 750,
+      "p95_seconds": 0.5088809000008041,
+      "max_seconds": 0.9010653000004822,
+      "http_statuses": [
+        200
+      ],
+      "summary": {
+        "audio_command_counts": {
+          "none": 8998
+        },
+        "input_frames": 3000,
+        "profile": "recommended",
+        "reason": "closed",
+        "session_id": "34255d2e-389a-4638-b88c-8b7e446bcc80",
+        "source_mode": "file",
+        "state_counts": {
+          "ALERT": 8998
+        },
+        "target_fps": 10,
+        "virtual_frames": 8998
+      }
+    },
+    {
+      "worker": 2,
+      "requests": 750,
+      "p95_seconds": 0.4944155999983195,
+      "max_seconds": 0.8402206000027945,
+      "http_statuses": [
+        200
+      ],
+      "summary": {
+        "audio_command_counts": {
+          "none": 8998
+        },
+        "input_frames": 3000,
+        "profile": "recommended",
+        "reason": "closed",
+        "session_id": "79ff85da-b3bb-4283-b68f-03a5951edf48",
+        "source_mode": "file",
+        "state_counts": {
+          "ALERT": 8998
+        },
+        "target_fps": 10,
+        "virtual_frames": 8998
+      }
+    }
+  ],
+  "acceptance": {
+    "no_5xx": true,
+    "session_isolation": true,
+    "p95_under_one_second": true
+  }
+}

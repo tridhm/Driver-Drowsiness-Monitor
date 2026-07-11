@@ -1,0 +1,165 @@
+{
+  "scope": "Bounded positive-target runtime semantic screen for opt-in/default-off silent seeded bridge over existing local positive-trigger media; no extraction, training, model change, threshold change, root config change, recommended alias change, or deploy default change.",
+  "status": "pass",
+  "decision": "silent_seeded_bridge_visual_semantic_positive_targets_verified_not_promoted",
+  "baseline_config": "configs/runtime_recommended_steady_20260705a.json",
+  "candidate_config": "configs/runtime_steady_seeded_bridge_silent_20260705a.json",
+  "source_runtime_batch_json": "",
+  "source_runtime_batch_dir": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_silent_seeded_bridge_visual_semantic_positive_targeted_20260705c",
+  "source_runtime_retry_json": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_silent_seeded_bridge_visual_semantic_positive_uldd_retry_20260705c\\summary.json",
+  "runtime_session_audit_json": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_session_summary_report_silent_seeded_bridge_visual_semantic_positive_targeted_20260705c\\summary.json",
+  "runtime_batch_note": "First batch produced 6 usable DROZY jobs and timed out on the first ULD 12000-frame job at 240s; the ULD baseline/candidate pair was superseded by the retry batch, which passed 2/2 with a larger timeout. The zero-byte failed ULD attempt is not used as evidence.",
+  "pairwise_diff_jsons": [
+    "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_1_3_7200_20260705c\\summary.json",
+    "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_5_3_7200_20260705c\\summary.json",
+    "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_11_2_7200_20260705c\\summary.json",
+    "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_uldd179_h_drowsy_12000_20260705c\\summary.json"
+  ],
+  "clip_pair_count": 4,
+  "clip_pairs": 4,
+  "runtime_jobs": 8,
+  "ok_jobs": 8,
+  "failed_jobs": 0,
+  "runtime_jobs_ok": "8/8 by combined evidence (6 first-batch usable jobs + 2 ULD retry jobs)",
+  "runtime_session_summaries": "8/8",
+  "session_summary_pass_count": 8,
+  "session_summary_fail_count": 0,
+  "session_audit_passes": true,
+  "session_audit_log_count": 8,
+  "paired_frames": 33600,
+  "paired_frames_total": 33600,
+  "pairwise_diff_count": 4,
+  "pairwise_audio_clean_count": 4,
+  "pairwise_decisions": {
+    "candidate_state_change_without_audio_regression": 4
+  },
+  "state_shift_counts_total": {
+    "ALERT->DROWSY": 6149,
+    "SUSPICIOUS->DROWSY": 12730
+  },
+  "changed_state_rows": 18879,
+  "changed_state_rows_total": 18879,
+  "bridge_action_rows": 18879,
+  "candidate_bridge_action_rows_total": 18879,
+  "visual_only_drowsy_bridge_rows": 18879,
+  "visual_only_label_rows": 18879,
+  "high_delta": 6149,
+  "high_delta_total": 6149,
+  "severe_delta": 18879,
+  "severe_delta_total": 18879,
+  "audible_delta": 0,
+  "audible_delta_total": 0,
+  "double_alert_delta_total": 0,
+  "actual_double_fire_delta": 0,
+  "actual_double_alert_fire_delta_total": 0,
+  "double_alert_suppressed_delta": 0,
+  "double_alert_suppressed_delta_total": 0,
+  "baseline_model_unsupported_hold_rows_total": 19095,
+  "candidate_model_unsupported_hold_rows_total": 6366,
+  "model_unsupported_hold_rows_delta_total": -12729,
+  "baseline_hold_rows_total": 29678,
+  "candidate_hold_rows_total": 10800,
+  "hold_rows_delta_total": -18878,
+  "candidate_alert_sound_counts": {
+    "none": 33600
+  },
+  "candidate_runtime_alert_semantic_counts": {
+    "standard": 14721,
+    "visual_only_drowsy_bridge": 18879
+  },
+  "candidate_visual_alert_mode_counts": {
+    "visual_only": 18879
+  },
+  "candidate_label_counts": {
+    "HYBRID VISUAL DROWSY": 18879
+  },
+  "covered_clip_pairs": [
+    "drozy_1_3_7200",
+    "drozy_5_3_7200",
+    "drozy_11_2_7200",
+    "uldd179_h_drowsy_12000"
+  ],
+  "pairwise_highlights": [
+    {
+      "clip_pair": "drozy_1_3_7200",
+      "decision": "candidate_state_change_without_audio_regression",
+      "paired_frames": 7200,
+      "changed_state_rows": 3812,
+      "state_shift_counts": {
+        "SUSPICIOUS->DROWSY": 3812
+      },
+      "high_delta": 0,
+      "severe_delta": 3812,
+      "audible_delta": 0,
+      "double_alert_delta": 0,
+      "actual_double_alert_fire_delta": 0,
+      "double_alert_suppressed_delta": 0,
+      "bridge_action_rows": 3812,
+      "visual_only_drowsy_bridge_rows": 3812,
+      "visual_only_label_rows": 3812,
+      "source_path": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_1_3_7200_20260705c\\summary.json"
+    },
+    {
+      "clip_pair": "drozy_5_3_7200",
+      "decision": "candidate_state_change_without_audio_regression",
+      "paired_frames": 7200,
+      "changed_state_rows": 3075,
+      "state_shift_counts": {
+        "ALERT->DROWSY": 3075
+      },
+      "high_delta": 3075,
+      "severe_delta": 3075,
+      "audible_delta": 0,
+      "double_alert_delta": 0,
+      "actual_double_alert_fire_delta": 0,
+      "double_alert_suppressed_delta": 0,
+      "bridge_action_rows": 3075,
+      "visual_only_drowsy_bridge_rows": 3075,
+      "visual_only_label_rows": 3075,
+      "source_path": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_5_3_7200_20260705c\\summary.json"
+    },
+    {
+      "clip_pair": "drozy_11_2_7200",
+      "decision": "candidate_state_change_without_audio_regression",
+      "paired_frames": 7200,
+      "changed_state_rows": 6564,
+      "state_shift_counts": {
+        "ALERT->DROWSY": 3074,
+        "SUSPICIOUS->DROWSY": 3490
+      },
+      "high_delta": 3074,
+      "severe_delta": 6564,
+      "audible_delta": 0,
+      "double_alert_delta": 0,
+      "actual_double_alert_fire_delta": 0,
+      "double_alert_suppressed_delta": 0,
+      "bridge_action_rows": 6564,
+      "visual_only_drowsy_bridge_rows": 6564,
+      "visual_only_label_rows": 6564,
+      "source_path": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_drozy_11_2_7200_20260705c\\summary.json"
+    },
+    {
+      "clip_pair": "uldd179_h_drowsy_12000",
+      "decision": "candidate_state_change_without_audio_regression",
+      "paired_frames": 12000,
+      "changed_state_rows": 5428,
+      "state_shift_counts": {
+        "SUSPICIOUS->DROWSY": 5428
+      },
+      "high_delta": 0,
+      "severe_delta": 5428,
+      "audible_delta": 0,
+      "double_alert_delta": 0,
+      "actual_double_alert_fire_delta": 0,
+      "double_alert_suppressed_delta": 0,
+      "bridge_action_rows": 5428,
+      "visual_only_drowsy_bridge_rows": 5428,
+      "visual_only_label_rows": 5428,
+      "source_path": "reports\\webcam_generalization_sprint_2026_06_28\\runtime_pairwise_log_diff_silent_seeded_bridge_visual_semantic_positive_uldd179_h_drowsy_12000_20260705c\\summary.json"
+    }
+  ],
+  "promotion_decision": "not_promoted",
+  "reason_not_promoted": "This verifies visual-only DROWSY semantics across the full prior positive-target surface, but it is still opt-in/default-off candidate evidence. Recommended/default promotion still requires the remaining full promotion gates and an explicit decision.",
+  "recommended_next_chunk": "Regenerate semantic UX review with this full positive visual-semantic screen, wire the new screen/review into readiness/source/actionability audits, then continue full promotion-gate review or branch-ranking meta-research before any recommended/default change.",
+  "no_deploy_change": true
+}

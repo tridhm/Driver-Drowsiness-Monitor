@@ -1,0 +1,31 @@
+{
+  "sha256": "8958d2d4dd0a0757b5a922adb11df263144e253873909ac8816cd26c248bc89c",
+  "selected_model_name": "logistic_regression",
+  "calibration_method": "isotonic",
+  "feature_set": "camera_robustness",
+  "feature_columns": [
+    "frame_count",
+    "fsm_state_mode",
+    "head_drop_count",
+    "max_eye_closed_duration_sec",
+    "max_fsm_evidence",
+    "max_mar",
+    "mean_ear",
+    "perclos_60s",
+    "valid_face_ratio",
+    "yawn_count"
+  ],
+  "artifact_threshold": 0.44,
+  "runtime_threshold": 0.55,
+  "default_profile": "recommended",
+  "held_out": {
+    "balanced_accuracy": 0.812013,
+    "tp": 87,
+    "tn": 214,
+    "fp": 18,
+    "fn": 37,
+    "support": 356
+  },
+  "source_commit": "d0ab90760a382ee2662c50ca2f869893140fcba9",
+  "source_artifact": "reports/exhaustive_best_model_2026_06_26/deploy_best_179_policy_winner/uldd_17978727_camera_model.joblib"
+}

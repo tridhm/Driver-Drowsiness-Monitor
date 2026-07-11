@@ -1,698 +1,285 @@
 from __future__ import annotations
 
-import argparse
-import base64
-import copy
-import json
+from collections import defaultdict, deque
+import logging
+import os
+from pathlib import Path
 import threading
 import time
-import socket
-import uuid
-from dataclasses import asdict
-from pathlib import Path
-from werkzeug.utils import secure_filename
-from typing import Any, Optional
+from typing import Any
 
-import numpy as np
+from flask import Flask, jsonify, redirect, render_template, request, url_for
+from werkzeug.exceptions import RequestEntityTooLarge
+from werkzeug.middleware.proxy_fix import ProxyFix
 
-import cv2
-from flask import Flask, Response, jsonify, render_template, request
-
-from fsm import DrowsinessState
-from runtime.alerts import AudioAlertController
-from runtime.config import RuntimeConfig, config_to_dict, load_runtime_config
-from runtime.contracts import DecisionResult, EngineContext
-from runtime.engines.registry import available_engines, create_engine
-from runtime.features import SignalFeaturePipeline
-from runtime.perception import PerceptionExtractor
-from runtime.transports import VideoTransport
+from runtime.landmark_adapter import REQUIRED_LANDMARKS
+from runtime.web_runtime import ProtocolError, SessionLimits, WinnerRuntime, WinnerSession
 
 
-app = Flask(__name__)
-UPLOAD_DIR = Path(__file__).resolve().parent / 'uploaded_videos'
-UPLOAD_DIR.mkdir(exist_ok=True)
-ALLOWED_VIDEO_EXTENSIONS = {'.avi', '.mp4', '.mov', '.mkv', '.webm'}
+ROOT = Path(__file__).resolve().parent
+LOGGER = logging.getLogger(__name__)
 
 
-def _encode_jpeg_b64(frame, quality: int = 80) -> str:
-    ok, jpg = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), int(quality)])
-    if not ok:
-        return ""
-    return base64.b64encode(jpg.tobytes()).decode("ascii")
-
-
-def _decode_data_url_image(data_url: str):
-    if not data_url:
-        raise ValueError("empty image")
-    if "," in data_url:
-        data_url = data_url.split(",", 1)[1]
-    data = base64.b64decode(data_url)
-    arr = np.frombuffer(data, dtype=np.uint8)
-    frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
-    if frame is None:
-        raise ValueError("cannot decode image")
-    return frame
-
-
-def _draw_detection_only(frame, raw):
-    """Clean video overlay: only eyes, mouth, head-pose guide, and centered no-face text."""
-    out = frame.copy()
-    h, w = out.shape[:2]
-
-    def draw_points(points, color, closed=True):
-        if not points:
-            return
-        pts = [(int(x), int(y)) for x, y in points]
-        for pt in pts:
-            cv2.circle(out, pt, max(1, int(w / 500)), color, -1, cv2.LINE_AA)
-        if len(pts) >= 2:
-            cv2.polylines(out, [np.array(pts, dtype=np.int32)], closed, color, max(1, int(w / 420)), cv2.LINE_AA)
-
-    if not getattr(raw, "face_detected", False):
-        text = "NO FACE DETECTED"
-        font = cv2.FONT_HERSHEY_SIMPLEX
-        scale = max(0.55, min(w, h) / 650.0)
-        thickness = max(2, int(min(w, h) / 320))
-        (tw, th), _ = cv2.getTextSize(text, font, scale, thickness)
-        x = max(8, (w - tw) // 2)
-        y = max(th + 8, (h + th) // 2)
-        cv2.putText(out, text, (x, y), font, scale, (0, 0, 0), thickness + 3, cv2.LINE_AA)
-        cv2.putText(out, text, (x, y), font, scale, (0, 0, 255), thickness, cv2.LINE_AA)
-        return out
-
-    draw_points(getattr(raw, "left_eye_points", []), (255, 210, 40), closed=True)
-    draw_points(getattr(raw, "right_eye_points", []), (255, 210, 40), closed=True)
-
-    mouth = getattr(raw, "mouth_points", [])
-    draw_points(mouth, (0, 220, 255), closed=True)
-    if len(mouth) >= 4:
-        cv2.line(out, mouth[0], mouth[1], (0, 220, 255), max(1, int(w / 420)), cv2.LINE_AA)
-        cv2.line(out, mouth[2], mouth[3], (0, 220, 255), max(1, int(w / 420)), cv2.LINE_AA)
-
-    hp = getattr(raw, "head_pose_points", {}) or {}
-    nose = hp.get("nose")
-    chin = hp.get("chin")
-    le = hp.get("left_eye")
-    re = hp.get("right_eye")
-    lm = hp.get("left_mouth")
-    rm = hp.get("right_mouth")
-    thickness = max(1, int(w / 430))
-    if le and re:
-        cv2.line(out, le, re, (80, 255, 80), thickness, cv2.LINE_AA)
-    if lm and rm:
-        cv2.line(out, lm, rm, (80, 255, 80), thickness, cv2.LINE_AA)
-    if nose and chin:
-        cv2.line(out, nose, chin, (180, 100, 255), thickness, cv2.LINE_AA)
-    if nose:
-        scale = max(18, int(min(w, h) * 0.12))
-        end_x = int(nose[0] + max(-1.0, min(1.0, raw.yaw / 35.0)) * scale)
-        end_y = int(nose[1] - max(-1.0, min(1.0, raw.pitch / 35.0)) * scale)
-        cv2.arrowedLine(out, nose, (end_x, end_y), (255, 120, 120), thickness, cv2.LINE_AA, tipLength=0.25)
-    return out
-
-
-def _status_payload(result: DecisionResult, signals, debug: dict[str, Any], fps: float, frame_count: int, engine: str, source: str = "browser_camera") -> dict[str, Any]:
-    return {
-        "running": True,
-        "state": result.state.value,
-        "label": result.label,
-        "evidence": round(float(result.evidence), 4),
-        "reasons": result.reasons,
-        "alert_sound": result.alert_sound,
-        "metrics": {
-            "ear": round(float(signals.ear), 4),
-            # Display the same smoothed MAR used by DynamicMAR for threshold comparison.
-            "mar": round(float(debug.get("mar_dynamic_mu", signals.mar)), 4),
-            "pitch": round(float(signals.pitch), 2),
-            "pitch_velocity": round(float(signals.pitch_velocity), 2),
-            "perclos": round(float(signals.perclos), 4),
-            "perclos_short": round(float(signals.perclos_short), 4),
-            "blink_frequency": int(signals.blink_frequency),
-            "yawn_frequency": int(signals.yawn_frequency),
-            "eyes_closed_consecutive": int(signals.eyes_closed_consecutive),
-            "head_nod_detected": bool(signals.head_nod_detected),
-            "ear_threshold": round(float(debug.get("ear_threshold", 0.0)), 4),
-            "ear_baseline": round(float(debug.get("ear_baseline", 0.0)), 4),
-            "mar_threshold": round(float(debug.get("mar_threshold", 0.0)), 4),
-            "mar_raw": round(float(debug.get("mar_raw", 0.0)), 4),
-            "face_detected": bool(debug.get("face_detected", False)),
-            "calibrated": bool(debug.get("calibrated", False)),
-        },
-        "flags": {
-            "ear_below_threshold": bool(signals.ear_below_threshold),
-            "mar_above_threshold": bool(signals.mar_above_threshold),
-            "perclos_high": bool(signals.perclos >= 0.20),
-            "perclos_short_high": bool(signals.perclos_short >= 0.60),
-            "blink_high": bool(signals.blink_frequency > 10),
-            "yawn_high": bool(signals.yawn_frequency >= 3 or signals.mar_above_threshold),
-            "pitch_high": bool(signals.pitch_above_threshold),
-            "closed_high": bool(signals.eyes_closed_consecutive >= 15),
-            "head_nod": bool(signals.head_nod_detected),
-        },
-        "debug": _json_safe(debug),
-        "fps": round(float(fps), 2),
-        "frame_count": int(frame_count),
-        "source": source,
-        "engine": engine,
-        "available_engines": available_engines(),
-    }
-
-
-class DMSWebRuntime:
-    """Run the full DMS pipeline in one background thread.
-
-    Pipeline:
-    VideoTransport -> PerceptionExtractor -> SignalFeaturePipeline -> DecisionEngine -> AudioAlertController
-    """
-
-    def __init__(self, config: RuntimeConfig):
-        self.config = config
+class SessionStore:
+    def __init__(self, runtime: WinnerRuntime, limits: SessionLimits | None = None) -> None:
+        self.runtime = runtime
+        self.limits = limits or SessionLimits()
+        self.idle_timeout_seconds = float(self.limits.idle_timeout_seconds)
         self.lock = threading.RLock()
-        self.running = False
-        self.thread: Optional[threading.Thread] = None
-        self.stop_event = threading.Event()
+        self.sessions: dict[str, WinnerSession] = {}
+        self.session_clients: dict[str, str] = {}
+        self.create_events: deque[float] = deque()
+        self.client_create_events: defaultdict[str, deque[float]] = defaultdict(deque)
 
-        self.transport: Optional[VideoTransport] = None
-        self.perception: Optional[PerceptionExtractor] = None
-        self.features: Optional[SignalFeaturePipeline] = None
-        self.engine = None
-        self.alerts: Optional[AudioAlertController] = None
-
-        self.latest_frame = None
-        self.latest_jpeg: Optional[bytes] = None
-        self.latest_status: dict[str, Any] = {
-            "running": False,
-            "state": "STOPPED",
-            "label": "STOPPED",
-            "evidence": 0.0,
-            "reasons": [],
-            "metrics": {},
-            "debug": {},
-            "fps": 0.0,
-            "frame_count": 0,
-            "source": self.config.input.source,
-            "video_path": self.config.input.video_path,
-            "engine": self.config.decision_engine,
-        }
-
-    def start(self, source: Optional[str] = None, video_path: Optional[str] = None, engine_name: Optional[str] = None) -> None:
+    def create(self, source_mode: str, target_fps: int, client_key: str) -> WinnerSession:
         with self.lock:
-            if self.running:
-                return
+            self.cleanup()
+            now = time.monotonic()
+            cutoff = now - 60.0
+            while self.create_events and self.create_events[0] <= cutoff:
+                self.create_events.popleft()
+            key = str(client_key or "unknown")
+            client_events = self.client_create_events[key]
+            while client_events and client_events[0] <= cutoff:
+                client_events.popleft()
+            active_for_client = sum(1 for owner in self.session_clients.values() if owner == key)
+            if len(self.sessions) >= self.limits.max_active_sessions:
+                raise ProtocolError("Active session limit reached", 429)
+            if active_for_client >= self.limits.max_active_sessions_per_client:
+                raise ProtocolError("Per-client active session limit reached", 429)
+            if len(self.create_events) >= self.limits.max_session_creates_per_minute:
+                raise ProtocolError("Session create rate limit exceeded", 429)
+            if len(client_events) >= self.limits.max_session_creates_per_client_per_minute:
+                raise ProtocolError("Per-client session create rate limit exceeded", 429)
+            session = self.runtime.create_session(source_mode=source_mode, target_fps=target_fps)
+            self.sessions[session.session_id] = session
+            self.session_clients[session.session_id] = key
+            self.create_events.append(now)
+            client_events.append(now)
+            return session
 
-            if source:
-                self.config.input.source = source
-            if video_path:
-                self.config.input.video_path = video_path
-            if engine_name:
-                self.config.decision_engine = engine_name
-
-            self.stop_event.clear()
-            self.running = True
-            self.thread = threading.Thread(target=self._loop, daemon=True)
-            self.thread.start()
-
-    def stop(self) -> None:
+    def get(self, session_id: str) -> WinnerSession:
         with self.lock:
-            self.running = False
-            self.stop_event.set()
-        if self.thread and self.thread.is_alive():
-            self.thread.join(timeout=2.0)
-        self._close_resources()
+            self.cleanup()
+            session = self.sessions.get(session_id)
+            if session is None:
+                raise KeyError(session_id)
+            session.last_activity = time.monotonic()
+            return session
+
+    def delete(self, session_id: str) -> dict[str, Any]:
         with self.lock:
-            self.latest_status["running"] = False
-            self.latest_status["state"] = "STOPPED"
-            self.latest_status["label"] = "STOPPED"
+            session = self.sessions.pop(session_id, None)
+            self.session_clients.pop(session_id, None)
+        if session is None:
+            raise KeyError(session_id)
+        return session.close()
 
-    def reset(self) -> None:
+    def cleanup(self) -> int:
+        now = time.monotonic()
+        expired: list[WinnerSession] = []
         with self.lock:
-            if self.engine:
-                self.engine.reset()
-            self.features = SignalFeaturePipeline(self.config)
-
-    def _init_resources(self) -> None:
-        self.transport = VideoTransport(
-            source=self.config.input.source,
-            video_path=self.config.input.video_path,
-            loop_file=self.config.input.loop_file,
-        )
-        self.perception = PerceptionExtractor()
-        self.features = SignalFeaturePipeline(self.config)
-        self.engine = create_engine(self.config.decision_engine, self.config)
-        self.engine.initialize(EngineContext(fps=self.config.runtime.fps, metadata={"engine": self.config.decision_engine}))
-        self.alerts = AudioAlertController(
-            sound_file="alert.wav",
-            drowsy_cooldown_seconds=self.config.alerts.drowsy_cooldown_seconds,
-        )
-
-    def _close_resources(self) -> None:
-        try:
-            if self.alerts:
-                self.alerts.close()
-        except Exception:
-            pass
-        try:
-            if self.perception:
-                self.perception.close()
-        except Exception:
-            pass
-        try:
-            if self.transport:
-                self.transport.close()
-        except Exception:
-            pass
-        self.transport = None
-        self.perception = None
-        self.features = None
-        self.engine = None
-        self.alerts = None
-
-    def _calibration_result(self, debug: dict[str, Any]) -> DecisionResult:
-        remaining_frames = max(0, self.config.runtime.calibration_frames - int(debug.get("calibration_count", 0)))
-        remaining_seconds = remaining_frames / max(self.config.runtime.fps, 1.0)
-        return DecisionResult(
-            state=DrowsinessState.ALERT,
-            evidence=0.0,
-            reasons=["CALIBRATING"],
-            alert_sound="none",
-            color=(0, 255, 255),
-            label=f"CALIBRATING {remaining_seconds:.1f}s",
-            debug={},
-        )
-
-    def _loop(self) -> None:
-        frame_count = 0
-        fps_ema = 0.0
-        last_time = time.time()
-        try:
-            self._init_resources()
-            assert self.transport and self.perception and self.features and self.engine and self.alerts
-
-            target_interval = 0.0
-            if self.config.input.source == "file":
-                # Play uploaded/file video near its real FPS instead of racing
-                # through frames as fast as the CPU can process them.
-                target_fps = getattr(self.transport, "fps", 0.0) or self.config.runtime.fps
-                if target_fps and target_fps > 1e-3:
-                    target_interval = 1.0 / float(target_fps)
-
-            while not self.stop_event.is_set():
-                loop_started = time.time()
-                ok, frame = self.transport.read()
-                if not ok or frame is None:
-                    time.sleep(0.01)
-                    continue
-
-                now = time.time()
-                raw = self.perception.process(frame)
-                signals, debug = self.features.update(raw, now)
-                debug["calibration_count"] = self.features.state.calibration_count
-
-                if not self.features.state.calibrated:
-                    result = DecisionResult(
-                        state=DrowsinessState.ALERT,
-                        evidence=0.0,
-                        reasons=["CALIBRATING"],
-                        alert_sound="none",
-                        color=(0, 255, 255),
-                        label=f"CALIBRATING {self.features.state.calibration_count}/{self.config.runtime.calibration_frames}",
-                        debug={},
-                    )
-                else:
-                    result = self.engine.update(signals)
-                    self.alerts.update(result.alert_sound)
-
-                dt = max(now - last_time, 1e-6)
-                inst_fps = 1.0 / dt
-                fps_ema = inst_fps if fps_ema == 0.0 else 0.9 * fps_ema + 0.1 * inst_fps
-                last_time = now
-                frame_count += 1
-
-                overlay = self._draw_overlay(frame, raw, signals, result, debug, fps_ema)
-                ok_jpg, jpg = cv2.imencode(".jpg", overlay, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
-                jpeg_bytes = jpg.tobytes() if ok_jpg else None
-
-                status = {
-                    "running": True,
-                    "state": result.state.value,
-                    "label": result.label,
-                    "evidence": round(float(result.evidence), 4),
-                    "reasons": result.reasons,
-                    "alert_sound": result.alert_sound,
-                    "metrics": {
-                        "ear": round(float(signals.ear), 4),
-                        "mar": round(float(signals.mar), 4),
-                        "pitch": round(float(signals.pitch), 2),
-                        "pitch_velocity": round(float(signals.pitch_velocity), 2),
-                        "perclos": round(float(signals.perclos), 4),
-                        "perclos_short": round(float(signals.perclos_short), 4),
-                        "blink_frequency": int(signals.blink_frequency),
-                        "yawn_frequency": int(signals.yawn_frequency),
-                        "eyes_closed_consecutive": int(signals.eyes_closed_consecutive),
-                        "head_nod_detected": bool(signals.head_nod_detected),
-                        "ear_threshold": round(float(debug.get("ear_threshold", 0.0)), 4),
-                        "ear_baseline": round(float(debug.get("ear_baseline", 0.0)), 4),
-                        "mar_threshold": round(float(debug.get("mar_threshold", 0.0)), 4),
-                        "mar_raw": round(float(debug.get("mar_raw", 0.0)), 4),
-                        "face_detected": bool(debug.get("face_detected", False)),
-                        "calibrated": bool(debug.get("calibrated", False)),
-                    },
-                    "debug": _json_safe(debug),
-                    "fps": round(float(fps_ema), 2),
-                    "frame_count": frame_count,
-                    "source": self.config.input.source,
-                    "video_path": self.config.input.video_path,
-                    "engine": self.config.decision_engine,
-                    "available_engines": available_engines(),
-                }
-
-                with self.lock:
-                    self.latest_jpeg = jpeg_bytes
-                    self.latest_status = status
-
-                if target_interval > 0:
-                    elapsed = time.time() - loop_started
-                    if elapsed < target_interval:
-                        time.sleep(target_interval - elapsed)
-
-        except Exception as exc:
-            with self.lock:
-                self.latest_status.update({"running": False, "state": "ERROR", "label": "ERROR", "error": str(exc)})
-            self.running = False
-        finally:
-            self._close_resources()
-
-    def _draw_overlay(self, frame, raw, signals, result: DecisionResult, debug: dict[str, Any], fps: float):
-        return _draw_detection_only(frame, raw)
-
-    def get_jpeg(self) -> Optional[bytes]:
-        with self.lock:
-            return self.latest_jpeg
-
-    def get_status(self) -> dict[str, Any]:
-        with self.lock:
-            return dict(self.latest_status)
+            for session_id, session in list(self.sessions.items()):
+                if now - session.last_activity > self.idle_timeout_seconds:
+                    expired.append(self.sessions.pop(session_id))
+                    self.session_clients.pop(session_id, None)
+        for session in expired:
+            session.close()
+        return len(expired)
 
 
-def _json_safe(obj: Any) -> Any:
+def _default_runtime() -> tuple[WinnerRuntime | None, str | None]:
+    requested = os.getenv("DMS_RUNTIME_PROFILE", "recommended")
     try:
-        json.dumps(obj)
-        return obj
-    except TypeError:
-        if isinstance(obj, dict):
-            return {str(k): _json_safe(v) for k, v in obj.items()}
-        if isinstance(obj, (list, tuple)):
-            return [_json_safe(x) for x in obj]
-        return str(obj)
-
-
-
-
-class BrowserCameraSession:
-    """Per-user runtime for phone/laptop browser camera.
-
-    Each session owns its own MediaPipe extractor, calibration buffers, dynamic thresholds,
-    FSM state, PERCLOS windows, blink/yawn counters, and evidence score.
-    This prevents users from sharing calibration/state when many people open the same link.
-    """
-
-    def __init__(self, session_id: str, config: RuntimeConfig, engine_name: str):
-        self.session_id = session_id
-        self.config = copy.deepcopy(config)
-        self.config.decision_engine = engine_name or self.config.decision_engine
-        self.perception = PerceptionExtractor()
-        self.features = SignalFeaturePipeline(self.config)
-        self.engine = create_engine(self.config.decision_engine, self.config)
-        self.engine.initialize(EngineContext(fps=self.config.runtime.fps, metadata={"engine": self.config.decision_engine, "source": "browser_camera"}))
-        self.lock = threading.RLock()
-        self.frame_count = 0
-        self.fps_ema = 0.0
-        self.last_time: Optional[float] = None
-        self.last_seen = time.time()
-
-    def reset(self) -> None:
-        with self.lock:
-            self.features = SignalFeaturePipeline(self.config)
-            self.engine.reset()
-            self.frame_count = 0
-            self.fps_ema = 0.0
-            self.last_time = None
-
-    def close(self) -> None:
-        try:
-            self.perception.close()
-        except Exception:
-            pass
-
-    def process(self, frame):
-        with self.lock:
-            now = time.time()
-            self.last_seen = now
-            raw = self.perception.process(frame)
-            signals, debug = self.features.update(raw, now)
-            debug["calibration_count"] = self.features.state.calibration_count
-
-            if not self.features.state.calibrated:
-                result = DecisionResult(
-                    state=DrowsinessState.ALERT,
-                    evidence=0.0,
-                    reasons=["CALIBRATING"],
-                    alert_sound="none",
-                    color=(0, 255, 255),
-                    label=f"CALIBRATING {self.features.state.calibration_count}/{self.config.runtime.calibration_frames}",
-                    debug={},
-                )
-            else:
-                result = self.engine.update(signals)
-
-            if self.last_time is not None:
-                dt = max(now - self.last_time, 1e-6)
-                inst_fps = 1.0 / dt
-                self.fps_ema = inst_fps if self.fps_ema == 0.0 else 0.9 * self.fps_ema + 0.1 * inst_fps
-            self.last_time = now
-            self.frame_count += 1
-
-            overlay = _draw_detection_only(frame, raw)
-            status = _status_payload(result, signals, debug, self.fps_ema, self.frame_count, self.config.decision_engine)
-            return overlay, status
-
-
-browser_sessions: dict[str, BrowserCameraSession] = {}
-browser_sessions_lock = threading.RLock()
-BASE_CONFIG: Optional[RuntimeConfig] = None
-
-
-def _get_browser_session(session_id: str, engine: str = "fsm") -> BrowserCameraSession:
-    global BASE_CONFIG
-    if not session_id:
-        session_id = str(uuid.uuid4())
-    if BASE_CONFIG is None:
-        BASE_CONFIG = load_runtime_config(None, {"decision_engine": engine})
-    with browser_sessions_lock:
-        sess = browser_sessions.get(session_id)
-        if sess is None or sess.config.decision_engine != engine:
-            if sess is not None:
-                sess.close()
-            sess = BrowserCameraSession(session_id, BASE_CONFIG, engine)
-            browser_sessions[session_id] = sess
-        # Lightweight cleanup of idle browser-camera sessions.
-        now = time.time()
-        stale = [sid for sid, s in browser_sessions.items() if (now - s.last_seen) > 300]
-        for sid in stale:
-            old = browser_sessions.pop(sid, None)
-            if old:
-                old.close()
-        return sess
-
-
-runtime: Optional[DMSWebRuntime] = None
-
-
-@app.get("/")
-def index():
-    # Public deployment opens the browser-camera/mobile realtime interface by default.
-    return render_template("mobile.html")
-
-
-@app.get("/mobile")
-def mobile():
-    return render_template("mobile.html")
-
-
-@app.get("/upload")
-def upload_page():
-    # Kept only for offline testing with recorded videos. Not needed in real deployment.
-    return render_template("index.html")
-
-
-@app.post("/api/mobile/start")
-def api_mobile_start():
-    payload = request.get_json(silent=True) or {}
-    session_id = str(payload.get("session_id") or uuid.uuid4())
-    engine = payload.get("engine") or "fsm"
-    sess = _get_browser_session(session_id, engine)
-    return jsonify({"ok": True, "session_id": sess.session_id, "engine": sess.config.decision_engine})
-
-
-@app.post("/api/mobile/reset")
-def api_mobile_reset():
-    payload = request.get_json(silent=True) or {}
-    session_id = str(payload.get("session_id") or "")
-    engine = payload.get("engine") or "fsm"
-    sess = _get_browser_session(session_id, engine)
-    sess.reset()
-    return jsonify({"ok": True, "session_id": sess.session_id})
-
-
-@app.post("/api/mobile/stop")
-def api_mobile_stop():
-    payload = request.get_json(silent=True) or {}
-    session_id = str(payload.get("session_id") or "")
-    with browser_sessions_lock:
-        sess = browser_sessions.pop(session_id, None)
-    if sess:
-        sess.close()
-    return jsonify({"ok": True})
-
-
-@app.post("/api/mobile/frame")
-def api_mobile_frame():
-    payload = request.get_json(silent=True) or {}
-    session_id = str(payload.get("session_id") or uuid.uuid4())
-    engine = payload.get("engine") or "fsm"
-    try:
-        frame = _decode_data_url_image(str(payload.get("image") or ""))
-        sess = _get_browser_session(session_id, engine)
-        overlay, status = sess.process(frame)
-        return jsonify({
-            "ok": True,
-            "session_id": sess.session_id,
-            "overlay": "data:image/jpeg;base64," + _encode_jpeg_b64(overlay, quality=78),
-            "status": status,
-        })
+        runtime = WinnerRuntime(ROOT, profile_name=requested)
+        LOGGER.info(
+            "winner_runtime_ready profile=%s model_hash=%s threshold=%s",
+            runtime.profile_name,
+            runtime.bundle.sha256,
+            runtime.bundle.runtime_threshold,
+        )
+        return runtime, None
     except Exception as exc:
-        return jsonify({"ok": False, "error": str(exc), "session_id": session_id}), 400
+        LOGGER.exception("winner_runtime_startup_failed")
+        return None, str(exc)
 
 
-@app.get("/video_feed")
-def video_feed():
-    def generate():
-        while True:
-            if runtime is None:
-                time.sleep(0.1)
-                continue
-            jpg = runtime.get_jpeg()
-            if jpg is None:
-                time.sleep(0.05)
-                continue
-            yield b"--frame\r\nContent-Type: image/jpeg\r\n\r\n" + jpg + b"\r\n"
-            time.sleep(0.01)
-    return Response(generate(), mimetype="multipart/x-mixed-replace; boundary=frame")
+def create_app(runtime: WinnerRuntime | None = None, startup_error: str | None = None) -> Flask:
+    flask_app = Flask(__name__)
+    flask_app.wsgi_app = ProxyFix(flask_app.wsgi_app, x_for=1, x_proto=1, x_host=1)
+    flask_app.config["MAX_CONTENT_LENGTH"] = SessionLimits().max_payload_bytes
+    flask_app.config["MAX_FORM_MEMORY_SIZE"] = SessionLimits().max_payload_bytes
+    active_runtime = runtime
+    limits = SessionLimits()
+    store = SessionStore(active_runtime, limits=limits) if active_runtime is not None else None
+
+    def require_runtime() -> WinnerRuntime:
+        if active_runtime is None:
+            raise ProtocolError(startup_error or "Winner runtime is not ready", 503)
+        return active_runtime
+
+    def require_store() -> SessionStore:
+        require_runtime()
+        assert store is not None
+        return store
+
+    def request_client_key() -> str:
+        return str(request.remote_addr or "unknown")
+
+    def reject_cross_origin() -> None:
+        origin = request.headers.get("Origin")
+        if origin and origin.rstrip("/") != request.host_url.rstrip("/"):
+            raise ProtocolError("Cross-origin API requests are not allowed", 403)
+
+    def require_json_object() -> dict[str, Any]:
+        reject_cross_origin()
+        if not request.is_json:
+            raise ProtocolError("Content-Type must be application/json", 415)
+        payload = request.get_json(silent=True)
+        if not isinstance(payload, dict):
+            raise ProtocolError("Request body must be a JSON object", 400)
+        return payload
+
+    def session_or_404(session_id: str) -> WinnerSession:
+        try:
+            return require_store().get(session_id)
+        except KeyError:
+            response = jsonify(
+                error="Session not found or expired. Create a new session; calibration will restart.",
+                error_code="SESSION_NOT_FOUND",
+            )
+            response.status_code = 404
+            raise ApiResponse(response)
+
+    @flask_app.errorhandler(ProtocolError)
+    def handle_protocol_error(exc: ProtocolError):
+        return jsonify(error=str(exc), error_code="PROTOCOL_ERROR"), exc.status_code
+
+    @flask_app.errorhandler(ApiResponse)
+    def handle_api_response(exc: "ApiResponse"):
+        return exc.response
+
+    @flask_app.errorhandler(RequestEntityTooLarge)
+    def handle_request_too_large(_exc: RequestEntityTooLarge):
+        return jsonify(error="Payload exceeds 64KB", error_code="PAYLOAD_TOO_LARGE"), 413
+
+    @flask_app.after_request
+    def add_response_headers(response):
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
+
+    @flask_app.get("/")
+    @flask_app.get("/mobile")
+    def index():
+        return render_template("mobile.html")
+
+    @flask_app.get("/upload")
+    def upload_redirect():
+        return redirect(url_for("index", mode="file"))
+
+    @flask_app.get("/api/healthz")
+    def healthz():
+        if active_runtime is None:
+            return jsonify(ready=False, error=startup_error or "runtime unavailable"), 503
+        return jsonify(
+            ready=True,
+            profile=active_runtime.profile_name,
+            model_hash=active_runtime.bundle.sha256,
+            feature_columns=active_runtime.bundle.feature_columns,
+            artifact_threshold=active_runtime.bundle.artifact_threshold,
+            runtime_threshold=active_runtime.bundle.runtime_threshold,
+        )
+
+    @flask_app.get("/api/v1/runtime-info")
+    def runtime_info():
+        winner = require_runtime()
+        return jsonify(
+            profile=winner.profile_name,
+            model_hash=winner.bundle.sha256,
+            model_name=winner.bundle.manifest["selected_model_name"],
+            reference_fps=30,
+            allowed_target_fps=[10, 15, 20, 30],
+            landmark_indices=list(REQUIRED_LANDMARKS),
+            landmark_count=len(REQUIRED_LANDMARKS),
+            runtime_threshold=winner.bundle.runtime_threshold,
+            cooldown_seconds=winner.config.alerts.drowsy_cooldown_seconds,
+            video_upload_enabled=False,
+            privacy="Video and images remain in the browser; only normalized landmark JSON is sent.",
+            session_idle_timeout_seconds=require_store().idle_timeout_seconds,
+            max_active_sessions=limits.max_active_sessions,
+            max_active_sessions_per_client=limits.max_active_sessions_per_client,
+        )
+
+    @flask_app.post("/api/v1/sessions")
+    def create_session():
+        payload = require_json_object()
+        session = require_store().create(
+            source_mode=payload.get("source_mode", "camera"),
+            target_fps=payload.get("target_fps", 20),
+            client_key=request_client_key(),
+        )
+        return jsonify(
+            session_id=session.session_id,
+            profile=session.runtime.profile_name,
+            model_hash=session.runtime.bundle.sha256,
+            target_fps=session.target_fps,
+            source_mode=session.source_mode,
+            calibration_reset=True,
+        ), 201
+
+    @flask_app.post("/api/v1/sessions/<session_id>/frames")
+    def process_frames(session_id: str):
+        payload = require_json_object()
+        return jsonify(session_or_404(session_id).process_batch(payload))
+
+    @flask_app.post("/api/v1/sessions/<session_id>/reset")
+    def reset_session(session_id: str):
+        reject_cross_origin()
+        return jsonify(session_or_404(session_id).reset())
+
+    @flask_app.delete("/api/v1/sessions/<session_id>")
+    def delete_session(session_id: str):
+        reject_cross_origin()
+        try:
+            summary = require_store().delete(session_id)
+        except KeyError:
+            return jsonify(error="Session not found", error_code="SESSION_NOT_FOUND"), 404
+        return jsonify(ok=True, summary=summary)
+
+    def legacy_gone(**_kwargs):
+        return jsonify(
+            error="This frame/video route was removed. Use /api/v1/sessions with browser landmark JSON.",
+            error_code="LEGACY_ROUTE_GONE",
+        ), 410
+
+    for rule, endpoint, methods in (
+        ("/api/mobile/<path:subpath>", "legacy_mobile", ["GET", "POST"]),
+        ("/api/upload", "legacy_upload", ["POST"]),
+        ("/api/start", "legacy_start", ["POST"]),
+        ("/api/stop", "legacy_stop", ["POST"]),
+        ("/api/reset", "legacy_reset", ["POST"]),
+        ("/api/status", "legacy_status", ["GET"]),
+        ("/api/config", "legacy_config", ["GET"]),
+        ("/video_feed", "legacy_video_feed", ["GET"]),
+    ):
+        flask_app.add_url_rule(rule, endpoint, legacy_gone, methods=methods)
+
+    flask_app.extensions["winner_runtime"] = active_runtime
+    flask_app.extensions["winner_session_store"] = store
+    return flask_app
 
 
-@app.get("/api/status")
-def api_status():
-    if runtime is None:
-        return jsonify({"running": False, "state": "NOT_INITIALIZED"})
-    return jsonify(runtime.get_status())
+class ApiResponse(Exception):
+    def __init__(self, response) -> None:
+        super().__init__("API response")
+        self.response = response
 
 
-
-@app.post("/api/upload")
-def api_upload():
-    """Upload a video from the browser and return the saved server-side path."""
-    if "video" not in request.files:
-        return jsonify({"ok": False, "error": "Không thấy file video trong request."}), 400
-    f = request.files["video"]
-    if not f or not f.filename:
-        return jsonify({"ok": False, "error": "Chưa chọn file video."}), 400
-
-    original = secure_filename(f.filename)
-    ext = Path(original).suffix.lower()
-    if ext not in ALLOWED_VIDEO_EXTENSIONS:
-        return jsonify({"ok": False, "error": f"Định dạng {ext} chưa hỗ trợ. Hãy dùng avi/mp4/mov/mkv/webm."}), 400
-
-    stamp = time.strftime("%Y%m%d_%H%M%S")
-    save_path = UPLOAD_DIR / f"{stamp}_{original}"
-    f.save(str(save_path))
-    return jsonify({"ok": True, "video_path": str(save_path), "filename": original})
-
-@app.post("/api/start")
-def api_start():
-    if runtime is None:
-        return jsonify({"ok": False, "error": "runtime not initialized"}), 500
-    payload = request.get_json(silent=True) or {}
-    source = payload.get("source")
-    video_path = payload.get("video_path")
-    engine = payload.get("engine")
-    # Nếu đang chạy mà người dùng đổi source/video/engine thì dừng rồi khởi động lại.
-    current = runtime.get_status()
-    if current.get("running"):
-        runtime.stop()
-    runtime.start(source=source, video_path=video_path, engine_name=engine)
-    return jsonify({"ok": True, "source": source, "video_path": video_path, "engine": engine})
-
-
-@app.post("/api/stop")
-def api_stop():
-    if runtime:
-        runtime.stop()
-    return jsonify({"ok": True})
-
-
-@app.post("/api/reset")
-def api_reset():
-    if runtime:
-        runtime.reset()
-    return jsonify({"ok": True})
-
-
-@app.get("/api/config")
-def api_config():
-    if runtime is None:
-        return jsonify({})
-    return jsonify(config_to_dict(runtime.config))
-
-
-def build_arg_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Web UI for Driver Drowsiness Monitoring System")
-    parser.add_argument("--config", default=None, help="Path to JSON runtime config")
-    parser.add_argument("--host", default="0.0.0.0", help="Use 0.0.0.0 so other devices on the same Wi-Fi can access the web UI.")
-    parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--source", choices=["webcam", "file"], default=None)
-    parser.add_argument("--video-path", default=None)
-    parser.add_argument("--decision-engine", choices=available_engines(), default=None)
-    parser.add_argument("--auto-start", action="store_true")
-    return parser
-
-
-def main() -> int:
-    global runtime
-    args = build_arg_parser().parse_args()
-    overrides = {}
-    if args.source:
-        overrides["source"] = args.source
-    if args.video_path:
-        overrides["video_path"] = args.video_path
-    if args.decision_engine:
-        overrides["decision_engine"] = args.decision_engine
-    config = load_runtime_config(args.config, overrides)
-    config.display_window = False
-    global BASE_CONFIG
-    BASE_CONFIG = copy.deepcopy(config)
-    runtime = DMSWebRuntime(config)
-    if args.auto_start:
-        runtime.start()
-    
-    try:
-        lan_ip = socket.gethostbyname(socket.gethostname())
-    except Exception:
-        lan_ip = 'YOUR_PC_IP'
-    print(f'[WEB] Local:   http://127.0.0.1:{args.port}')
-    print(f'[WEB] Network: http://{lan_ip}:{args.port}  (phone/other PC on same Wi-Fi)')
-    app.run(host=args.host, port=args.port, threaded=True, debug=False)
-    return 0
+_DEFAULT_RUNTIME, _STARTUP_ERROR = _default_runtime()
+app = create_app(_DEFAULT_RUNTIME, _STARTUP_ERROR)
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    port = int(os.getenv("PORT", "5000"))
+    app.run(host="0.0.0.0", port=port, debug=False, threaded=True)

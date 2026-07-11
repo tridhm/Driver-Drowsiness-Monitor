@@ -35,10 +35,12 @@ class DrowsinessSignals:
     blink_frequency: int = 0
 
     # Event flags
+    gaze_stable: bool = False
     head_nod_detected: bool = False
     eyes_closed_consecutive: int = 0  # frames
 
     # Raw detection flags (for FSM evidence scoring)
+    face_detected: bool = True
     ear_below_threshold: bool = False
     mar_above_threshold: bool = False
     pitch_above_threshold: bool = False
@@ -97,6 +99,32 @@ class DrowsinessFSM:
         pitch_threshold: float = 20.0,
         perclos_threshold: float = 0.2,
         hysteresis_margin: float = 0.15,
+        pitch_velocity_evidence_threshold: float = 5.0,
+        yawn_frequency_threshold: int = 3,
+        blink_frequency_threshold: int = 10,
+        hysteresis_alert_to_suspicious: float = 0.45,
+        hysteresis_suspicious_to_alert: float = 0.25,
+        hysteresis_suspicious_to_drowsy: float = 0.60,
+        hysteresis_drowsy_to_suspicious: float = 0.40,
+        hysteresis_drowsy_to_critical: float = 0.75,
+        hysteresis_critical_to_drowsy: float = 0.55,
+        extreme_critical_perclos_short_drowsy: float = 0.60,
+        extreme_critical_perclos_long: float = 0.70,
+        extreme_drowsy_perclos_short: float = 0.60,
+        extreme_drowsy_perclos_long: float = 0.50,
+        extreme_drowsy_ear: float = 0.10,
+        extreme_drowsy_eye_closed_seconds: float = 1.0,
+        extreme_suspicious_perclos_long: float = 0.35,
+        extreme_suspicious_pitch_velocity: float = 10.0,
+        frames_to_suspicious_seconds: float = 0.5,
+        frames_to_recovery_seconds: float = 1.0,
+        sustained_evidence_seconds: float = 1.0,
+        min_dwell_alert_seconds: float = 5.0,
+        min_dwell_suspicious_seconds: float = 3.0,
+        recovery_grace_period_seconds: float = 10.0,
+        extreme_signal_seconds: float = 1.0,
+        recovery_perclos_short_threshold: float = 0.40,
+        drowsy_recovery_seconds: float = 10.0,
     ):
         """
         Args:
@@ -113,6 +141,35 @@ class DrowsinessFSM:
         self.pitch_threshold = pitch_threshold
         self.perclos_threshold = perclos_threshold
         self.hysteresis_margin = hysteresis_margin
+        self.pitch_velocity_evidence_threshold = pitch_velocity_evidence_threshold
+        self.yawn_frequency_threshold = yawn_frequency_threshold
+        self.blink_frequency_threshold = blink_frequency_threshold
+
+        self.hysteresis_alert_to_suspicious = hysteresis_alert_to_suspicious
+        self.hysteresis_suspicious_to_alert = hysteresis_suspicious_to_alert
+        self.hysteresis_suspicious_to_drowsy = hysteresis_suspicious_to_drowsy
+        self.hysteresis_drowsy_to_suspicious = hysteresis_drowsy_to_suspicious
+        self.hysteresis_drowsy_to_critical = hysteresis_drowsy_to_critical
+        self.hysteresis_critical_to_drowsy = hysteresis_critical_to_drowsy
+
+        self.extreme_critical_perclos_short_drowsy = extreme_critical_perclos_short_drowsy
+        self.extreme_critical_perclos_long = extreme_critical_perclos_long
+        self.extreme_drowsy_perclos_short = extreme_drowsy_perclos_short
+        self.extreme_drowsy_perclos_long = extreme_drowsy_perclos_long
+        self.extreme_drowsy_ear = extreme_drowsy_ear
+        self.extreme_drowsy_eye_closed_seconds = extreme_drowsy_eye_closed_seconds
+        self.extreme_suspicious_perclos_long = extreme_suspicious_perclos_long
+        self.extreme_suspicious_pitch_velocity = extreme_suspicious_pitch_velocity
+
+        self.frames_to_suspicious_seconds = frames_to_suspicious_seconds
+        self.frames_to_recovery_seconds = frames_to_recovery_seconds
+        self.sustained_evidence_seconds = sustained_evidence_seconds
+        self.min_dwell_alert_seconds = min_dwell_alert_seconds
+        self.min_dwell_suspicious_seconds = min_dwell_suspicious_seconds
+        self.recovery_grace_period_seconds = recovery_grace_period_seconds
+        self.extreme_signal_seconds = extreme_signal_seconds
+        self.recovery_perclos_short_threshold = recovery_perclos_short_threshold
+        self.drowsy_recovery_seconds = drowsy_recovery_seconds
 
         # State tracking
         self.state = DrowsinessState.ALERT
@@ -123,29 +180,43 @@ class DrowsinessFSM:
         self.suspicious_frames = 0
         self.drowsy_frames = 0
 
-        # Timing thresholds (in frames, normalized by FPS)
-        self.frames_to_suspicious = int(fps * 0.5)   # 0.5s of evidence
-        self.frames_to_drowsy = int(fps * 2.0)       # 2s sustained
-        self.frames_to_critical = int(fps * 5.0)     # 5s sustained
-        self.frames_to_recovery = int(fps * 1.0)     # 1s clean to recover
+        # Timing thresholds are derived from FPS so replay/runtime can tune them honestly.
+        self.frames_to_suspicious = 0
+        self.frames_to_recovery = 0
+        self.sustained_evidence_frames = 0
+        self.min_dwell_alert = 0
+        self.min_dwell_suspicious = 0
+        self.recovery_grace_period = 0
+        self.extreme_signal_frames = 0
+        self.drowsy_recovery_frames = 0
 
         # Recovery counter (must stay clean for N frames to downgrade)
         self.recovery_counter = 0
 
-        # Minimum dwell time: must stay in state for N seconds before allowing escalation
-        self.min_dwell_alert = int(fps * 5.0)   # 5s minimum in ALERT before SUSPICIOUS
-        self.min_dwell_suspicious = int(fps * 3.0)  # 3s minimum in SUSPICIOUS before DROWSY
         # Sustained evidence counter: evidence must be above threshold for N consecutive frames
         self.sustained_evidence_counter = 0
         self.frames_in_current_state = 0
 
-        # Grace period after recovery: don't re-escalate for N seconds
-        self.recovery_grace_period = int(fps * 10.0)  # 10s grace after recovering to ALERT
         self.recovery_grace_counter = 0
 
         # Extreme signal tracking (for direct escalation)
         self.extreme_signal_counter = 0
         self.last_extreme_state = None
+        self.set_fps(fps)
+
+    def set_fps(self, fps: float) -> None:
+        self.fps = fps
+        self.frames_to_suspicious = self._seconds_to_frames(self.frames_to_suspicious_seconds)
+        self.frames_to_recovery = self._seconds_to_frames(self.frames_to_recovery_seconds)
+        self.sustained_evidence_frames = self._seconds_to_frames(self.sustained_evidence_seconds)
+        self.min_dwell_alert = self._seconds_to_frames(self.min_dwell_alert_seconds)
+        self.min_dwell_suspicious = self._seconds_to_frames(self.min_dwell_suspicious_seconds)
+        self.recovery_grace_period = self._seconds_to_frames(self.recovery_grace_period_seconds)
+        self.extreme_signal_frames = self._seconds_to_frames(self.extreme_signal_seconds)
+        self.drowsy_recovery_frames = self._seconds_to_frames(self.drowsy_recovery_seconds)
+
+    def _seconds_to_frames(self, seconds: float) -> int:
+        return max(0, int(self.fps * seconds))
 
     def _compute_evidence(self, signals: DrowsinessSignals) -> float:
         """
@@ -156,7 +227,7 @@ class DrowsinessFSM:
         - PERCLOS (cumulative): 25%
         - Head nodding: 15%
         - Yawning: 10%
-        - Blink anomalies: 10%
+        - Gaze / blink anomalies: 10%
         """
         score = 0.0
 
@@ -178,24 +249,27 @@ class DrowsinessFSM:
             score += perclos_evidence * 0.25
 
         # 3. Head nodding evidence (15%)
-        # Head nod is used only after the feature pipeline has confirmed a
-        # robust nod candidate. We do NOT score pitch velocity alone because
-        # road bumps/camera shake can cause short pitch spikes in awake drivers.
         head_evidence = 0.0
         if signals.head_nod_detected:
-            head_evidence += 0.15
+            head_evidence += 0.10
+        # Pitch velocity: rapid head drop = strong nod indicator
+        if abs(signals.pitch_velocity) > self.pitch_velocity_evidence_threshold:
+            head_evidence += 0.05
         score += min(head_evidence, 0.15)
 
         # 4. Yawning evidence (10%)
-        if signals.yawn_frequency >= 3:
+        if signals.yawn_frequency >= self.yawn_frequency_threshold:
             score += 0.10
         elif signals.mar_above_threshold:
             score += 0.05
 
-        # 5. Blink anomalies (10%)
-        # Rapid blinking can indicate fatigue or eye strain.
-        if signals.blink_frequency > 10:
-            score += 0.10
+        # 5. Gaze / blink anomalies (10%)
+        # Gaze: eyes open but fixed/unmoving (blank stare) - independent from PERCLOS
+        # PERCLOS catches eyes closing, gaze catches eyes open but unresponsive
+        if signals.gaze_stable:
+            score += 0.10  # Fixed gaze = tunnel vision, regardless of EAR
+        elif signals.blink_frequency > self.blink_frequency_threshold:
+            score += 0.05
 
         return min(score, 1.0)
 
@@ -215,36 +289,39 @@ class DrowsinessFSM:
 
         # 5s-PERCLOS >= 0.60 = eyes closed 60% of last 5 seconds (already drowsy or worse)
         state_order = [DrowsinessState.ALERT, DrowsinessState.SUSPICIOUS, DrowsinessState.DROWSY, DrowsinessState.CRITICAL]
-        if state_order.index(self.state) >= state_order.index(DrowsinessState.DROWSY) and signals.perclos_short >= 0.60:
+        if (
+            state_order.index(self.state) >= state_order.index(DrowsinessState.DROWSY)
+            and signals.perclos_short >= self.extreme_critical_perclos_short_drowsy
+        ):
             return DrowsinessState.CRITICAL
 
         # PERCLOS >= 0.70 = eyes closed 70% of last 60 seconds
-        if signals.perclos >= 0.70:
+        if signals.perclos >= self.extreme_critical_perclos_long:
             return DrowsinessState.CRITICAL
 
         # === DROWSY-level extremes (direct jump to DROWSY) ===
         # 5s-PERCLOS >= 0.60 = eyes closed 60% of last 5 seconds (rapid escalation)
         # Works from ALERT or SUSPICIOUS state
-        if signals.perclos_short >= 0.60:
+        if signals.perclos_short >= self.extreme_drowsy_perclos_short:
             return DrowsinessState.DROWSY
 
         # PERCLOS >= 0.50 = eyes closed half the time
-        if signals.perclos >= 0.50:
+        if signals.perclos >= self.extreme_drowsy_perclos_long:
             return DrowsinessState.DROWSY
 
         # EAR extremely low (<0.10) for 1+ second = eyes fully shut
-        if signals.ear < 0.10 and signals.eyes_closed_consecutive >= int(self.fps * 1.0):
+        if signals.ear < self.extreme_drowsy_ear and signals.eyes_closed_consecutive >= self._seconds_to_frames(self.extreme_drowsy_eye_closed_seconds):
             return DrowsinessState.DROWSY
 
         # === SUSPICIOUS-level extremes (direct jump to SUSPICIOUS) ===
 
         # PERCLOS >= 0.35 = significant drowsiness (only from ALERT)
-        if signals.perclos >= 0.35 and self.state == DrowsinessState.ALERT:
+        if signals.perclos >= self.extreme_suspicious_perclos_long and self.state == DrowsinessState.ALERT:
             return DrowsinessState.SUSPICIOUS
 
-        # Pitch velocity alone is intentionally not used for extreme escalation.
-        # In real driving videos, road bumps and camera vibration can create
-        # large pitch-velocity spikes while the driver is still awake.
+        # Violent head nod (>=10 degrees/frame) = nodding off
+        if abs(signals.pitch_velocity) >= self.extreme_suspicious_pitch_velocity and self.state == DrowsinessState.ALERT:
+            return DrowsinessState.SUSPICIOUS
 
         return None
 
@@ -259,20 +336,20 @@ class DrowsinessFSM:
 
         # Ascending thresholds (τ_high — harder to escalate)
         if current == DrowsinessState.ALERT:
-            if evidence > 0.45:  # Raised from 0.35 — need stronger evidence
+            if evidence > self.hysteresis_alert_to_suspicious:
                 return DrowsinessState.SUSPICIOUS
         elif current == DrowsinessState.SUSPICIOUS:
-            if evidence > 0.60:  # Raised from 0.55
+            if evidence > self.hysteresis_suspicious_to_drowsy:
                 return DrowsinessState.DROWSY
-            elif evidence < 0.25:  # τ_low for recovery (raised from 0.20)
+            elif evidence < self.hysteresis_suspicious_to_alert:
                 return DrowsinessState.ALERT
         elif current == DrowsinessState.DROWSY:
-            if evidence > 0.75:
+            if evidence > self.hysteresis_drowsy_to_critical:
                 return DrowsinessState.CRITICAL
-            elif evidence < 0.40:  # τ_low for recovery (raised from 0.35)
+            elif evidence < self.hysteresis_drowsy_to_suspicious:
                 return DrowsinessState.SUSPICIOUS
         elif current == DrowsinessState.CRITICAL:
-            if evidence < 0.55:  # τ_low for recovery
+            if evidence < self.hysteresis_critical_to_drowsy:
                 return DrowsinessState.DROWSY
 
         return current
@@ -305,7 +382,7 @@ class DrowsinessFSM:
                 self.last_extreme_state = forced_state
 
             # Require 1 second of sustained extreme signal
-            if self.extreme_signal_counter >= int(self.fps * 1.0):
+            if self.extreme_signal_counter >= self.extreme_signal_frames:
                 self.state = forced_state
                 self.recovery_counter = 0
                 self.sustained_evidence_counter = 0
@@ -321,7 +398,7 @@ class DrowsinessFSM:
         # === STEP 2: Normal evidence-based logic ===
 
         # Track sustained evidence (decaying accumulator — tolerates brief dips)
-        escalation_threshold = 0.45 if self.state == DrowsinessState.ALERT else 0.60
+        escalation_threshold = self.hysteresis_alert_to_suspicious if self.state == DrowsinessState.ALERT else self.hysteresis_suspicious_to_drowsy
         if self.evidence_score > escalation_threshold:
             self.sustained_evidence_counter += 1
         else:
@@ -340,10 +417,9 @@ class DrowsinessFSM:
         state_order = [DrowsinessState.ALERT, DrowsinessState.SUSPICIOUS, DrowsinessState.DROWSY, DrowsinessState.CRITICAL]
         if state_order.index(target_state) < state_order.index(self.state):
             # DROWSY->SUSPICIOUS: recover when PERCLOS_5s drops below 0.40 (eyes open for ~2s in 5s window)
-            if signals.perclos_short < 0.40:
+            if signals.perclos_short < self.recovery_perclos_short_threshold:
                 self.recovery_counter += 1
-                # Require ~10 seconds of eyes open to recover from DROWSY
-                recovery_frames_needed = int(self.fps * 10.0) if self.state == DrowsinessState.DROWSY else self.frames_to_recovery
+                recovery_frames_needed = self.drowsy_recovery_frames if self.state == DrowsinessState.DROWSY else self.frames_to_recovery
                 if self.recovery_counter >= recovery_frames_needed:
                     self.state = target_state
                     self.recovery_counter = 0
@@ -357,8 +433,7 @@ class DrowsinessFSM:
             # Escalating or same level — check conditions
             state_order = [DrowsinessState.ALERT, DrowsinessState.SUSPICIOUS, DrowsinessState.DROWSY, DrowsinessState.CRITICAL]
             if state_order.index(target_state) > state_order.index(self.state):
-                sustained_frames_needed = int(self.fps * 1.0)
-                has_sustained_evidence = self.sustained_evidence_counter >= sustained_frames_needed
+                has_sustained_evidence = self.sustained_evidence_counter >= self.sustained_evidence_frames
 
                 min_dwell = self.min_dwell_alert if self.state == DrowsinessState.ALERT else self.min_dwell_suspicious
                 has_min_dwell = self.frames_in_current_state >= min_dwell

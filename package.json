@@ -1,0 +1,14 @@
+{
+  "name": "driver-drowsiness-monitor-winner-web",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "npm run test:js",
+    "test:js": "node --test tests/js/*.test.js"
+  },
+  "devDependencies": {
+    "@mediapipe/face_mesh": "0.4.1633559619"
+  }
+}

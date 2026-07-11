@@ -1,0 +1,56 @@
+name: CI
+
+on:
+  push:
+    branches: [main, feat/integrate-camera-hybrid-winner]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version-file: .python-version
+          cache: pip
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements.txt
+          python -m pip check
+      - name: Run Python tests
+        run: python -m unittest discover tests -v
+      - name: Accelerated three-session load smoke
+        run: python tools/load_acceptance.py --sessions 3 --duration-seconds 3 --input-fps 10 --batch-size 4 --enforce-production-limits
+      - name: Model startup smoke
+        env:
+          DMS_RUNTIME_PROFILE: recommended
+        run: |
+          python - <<'PY'
+          from web_server import app
+          client = app.test_client()
+          response = client.get('/api/healthz')
+          assert response.status_code == 200, response.get_data(as_text=True)
+          payload = response.get_json()
+          assert payload['ready'] is True
+          assert payload['profile'] == 'recommended'
+          assert payload['model_hash'] == '8958d2d4dd0a0757b5a922adb11df263144e253873909ac8816cd26c248bc89c'
+          PY
+
+  javascript:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install JavaScript workspace
+        run: npm ci
+      - name: Run JavaScript tests
+        run: npm test

@@ -36,7 +36,7 @@
     .state { font-size:24px; font-weight:900; line-height:1; }
     .state.ALERT { color:var(--green); } .state.SUSPICIOUS { color:var(--yellow); }
     .state.DROWSY { color:var(--orange); } .state.CRITICAL { color:var(--red); }
-    .state.STOPPED, .state.LOADING { color:var(--muted); } .state.PAUSED { color:var(--yellow); }
+    .state.STOPPED, .state.LOADING, .state.UNAVAILABLE { color:var(--muted); } .state.PAUSED { color:var(--yellow); }
     .evidence { font-size:30px; font-weight:900; font-family:Consolas, monospace; text-align:right; }
     .label { color:var(--muted); font-size:11px; }
     .grid { display:grid; grid-template-columns:1fr 1fr; gap:6px; padding:8px; }
@@ -69,7 +69,7 @@
       .state { font-size:22px; } .evidence { font-size:28px; }
     }
   </style>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/face_mesh.js"></script>
+  <script src="/static/vendor/face_mesh/face_mesh.js"></script>
 </head>
 <body>
 <header>
@@ -84,11 +84,11 @@
       <canvas id="view"></canvas>
       <div id="noFace" class="center-msg">NO FACE DETECTED</div>
       <div id="calib" class="calib">
-        <div><b>Đang hiệu chuẩn EAR</b> <span id="calibText" class="pill">0%</span></div>
+        <div><b>Đang hiệu chuẩn camera</b> <span id="calibText" class="pill">0%</span></div>
         <div class="pill">Giữ mặt nhìn thẳng, mở mắt tự nhiên, không nói/ngáp trong vài giây đầu.</div>
         <div class="bar"><div id="calibFill" class="fill"></div></div>
       </div>
-      <div id="hint" class="hint">Bấm Start camera để chạy realtime trên chính trình duyệt. Bản này xử lý MediaPipe trực tiếp trên thiết bị, không gửi frame video lên server.</div>
+      <div id="hint" class="hint">Bấm Start camera để chạy realtime trên chính trình duyệt. Bản này xử lý MediaPipe trên thiết bị; video ở lại trình duyệt, chỉ gửi landmark JSON chuẩn hóa lên server.</div>
     </div>
     <div class="controls">
       <select id="cameraFacing">
@@ -119,7 +119,7 @@
         <div id="fps" class="label">FPS xử lý: 0</div>
       </div>
       <div>
-        <div class="label" style="text-align:right">Evidence score</div>
+        <div class="label" style="text-align:right">Sleepy probability</div>
         <div id="evidence" class="evidence">0.00</div>
       </div>
     </div>
@@ -128,7 +128,7 @@
       <div class="metric" id="box-ear"><div class="label">EAR / threshold</div><div id="ear" class="value">-</div></div>
       <div class="metric" id="box-mar"><div class="label">MAR / threshold</div><div id="mar" class="value">-</div></div>
       <div class="metric" id="box-p60"><div class="label">PERCLOS 60s</div><div id="p60" class="value">-</div></div>
-      <div class="metric" id="box-p5"><div class="label">PERCLOS 5s</div><div id="p5" class="value">-</div></div>
+      <div class="metric" id="box-p5"><div class="label">PERCLOS 6s</div><div id="p5" class="value">-</div></div>
       <div class="metric" id="box-blink"><div class="label">Blink / 10s</div><div id="blink" class="value">-</div></div>
       <div class="metric" id="box-yawn"><div class="label">Yawn / 60s</div><div id="yawn" class="value">-</div></div>
       <div class="metric" id="box-pitch"><div class="label">Pitch</div><div id="pitch" class="value">-</div></div>
@@ -144,193 +144,132 @@
       <button id="clearHistoryBtn">Xóa</button>
     </div>
     <div id="eventHistory" class="history-list"><span class="ok">Chưa có sự kiện</span></div>
-    <div class="mini">Lịch sử lưu trên trình duyệt từng thiết bị. Video/camera không được gửi lên server trong chế độ realtime browser.</div>
+    <div class="mini">Lịch sử lưu trên trình duyệt từng thiết bị. Video/camera ở lại trình duyệt; server chỉ nhận landmark JSON chuẩn hóa để quyết định cảnh báo.</div>
   </aside>
 </div>
 
 <audio id="alarmAudio" src="/static/alert.wav" preload="auto"></audio>
 
+<script src="/static/winner_client.js"></script>
 <script>
 'use strict';
-const SQAD_P = 0.6827;
-const SQAD_K = 2.5;
-const SQAD_FLOOR = 0.10;
-const SQAD_GAP = 0.013;
-const WARMUP_F = 20;
-const CALIB_F = 100;
+
 const LEFT_EYE = [33,160,158,133,153,144];
 const RIGHT_EYE = [362,385,387,263,373,380];
 const MOUTH_4 = [61,291,13,14];
-const STATE_ORDER = ['ALERT','SUSPICIOUS','DROWSY','CRITICAL'];
-
-class EWMAFilter {
-  constructor(alpha=0.20) { this.alpha = alpha; this.mu = null; }
-  update(v) { this.mu = this.mu === null ? v : this.alpha*v + (1-this.alpha)*this.mu; return this.mu; }
-  reset() { this.mu = null; }
-}
-class SQADDispersion {
-  constructor() { this.sigma = 0.02; this.ctr = 0; }
-  compute(arr) {
-    if (arr.length < 10) return this.sigma;
-    if (++this.ctr < 5) return this.sigma;
-    this.ctr = 0;
-    const sorted = [...arr].sort((a,b)=>a-b);
-    const med = sorted[Math.floor(sorted.length/2)];
-    const devs = arr.map(v=>Math.abs(v-med)).sort((a,b)=>a-b);
-    const idx = Math.min(devs.length-1, Math.floor(SQAD_P*devs.length));
-    this.sigma = Math.max(devs[idx] || 0.003, 0.003);
-    return this.sigma;
-  }
-}
-class HysteresisGate {
-  constructor() { this.closed = false; }
-  update(ear, tLow) {
-    const tHigh = tLow + SQAD_GAP;
-    if (!this.closed) { if (ear < tLow) this.closed = true; }
-    else { if (ear > tHigh) this.closed = false; }
-    return this.closed;
-  }
-  reset() { this.closed = false; }
-}
-class DynamicEAR {
-  constructor() { this.ewma=new EWMAFilter(0.20); this.sqad=new SQADDispersion(); this.hyst=new HysteresisGate(); this.buf=[]; this.frame=0; this.phase='WARMUP'; this.tLow=null; this.sigma=0.02; }
-  update(earRaw) {
-    this.frame++;
-    const mu = this.ewma.update(earRaw);
-    if (this.phase === 'LOCKED') {
-      const closed = this.hyst.update(earRaw, this.tLow);
-      return {phase:'LOCKED', mu, sigma:this.sigma, tLow:this.tLow, closed, progress:1};
-    }
-    this.buf.push(earRaw); if (this.buf.length > 150) this.buf.shift();
-    if (this.phase === 'WARMUP') {
-      if (this.frame >= WARMUP_F) this.phase = 'CALIBRATING';
-      return {phase:'WARMUP', mu, sigma:this.sigma, tLow:null, closed:false, progress:Math.min(1, this.frame/WARMUP_F)};
-    }
-    this.sigma = this.sqad.compute(this.buf);
-    const frameInCalib = this.frame - WARMUP_F;
-    if (frameInCalib >= CALIB_F) {
-      const T = mu - SQAD_K*this.sigma;
-      this.tLow = Math.max(T, SQAD_FLOOR);
-      this.phase = 'LOCKED';
-    }
-    return {phase:this.phase, mu, sigma:this.sigma, tLow:this.tLow, closed:false, progress:Math.min(1, frameInCalib/CALIB_F)};
-  }
-  reset() { this.ewma=new EWMAFilter(0.20); this.sqad=new SQADDispersion(); this.hyst=new HysteresisGate(); this.buf=[]; this.frame=0; this.phase='WARMUP'; this.tLow=null; this.sigma=0.02; }
-}
-class DynamicMAR {
-  constructor(windowSize=150, factor=0.7, floor=0.15) { this.ewma=new EWMAFilter(0.10); this.buf=[]; this.windowSize=windowSize; this.factor=factor; this.floor=floor; this.sigma=0; this.thr=floor; }
-  update(marRaw) {
-    const raw = Number.isFinite(marRaw) ? marRaw : 0;
-    const mu = this.ewma.update(raw);
-    this.buf.push(raw); if (this.buf.length > this.windowSize) this.buf.shift();
-    if (this.buf.length >= 10) {
-      const devs = this.buf.map(v=>Math.abs(v-mu)).sort((a,b)=>a-b);
-      const idx = Math.min(devs.length-1, Math.floor(SQAD_P*devs.length));
-      this.sigma = devs[idx] || 0;
-    }
-    this.thr = Math.max(this.floor, mu + this.factor*this.sigma);
-    return {raw, mu, sigma:this.sigma, thr:this.thr, open: raw > this.thr, progress:Math.min(1, this.buf.length/this.windowSize)};
-  }
-  reset() { this.ewma=new EWMAFilter(0.10); this.buf=[]; this.sigma=0; this.thr=this.floor; }
-}
-class BlinkTracker {
-  constructor() { this.active=false; this.start=0; this.times=[]; }
-  update(closed) {
-    const now=Date.now()/1000;
-    if (closed && !this.active) { this.active=true; this.start=now; }
-    else if (!closed && this.active) { this.active=false; if (now-this.start>=0.04) this.times.push(now); }
-    this.times=this.times.filter(t=>now-t<=10);
-    return {freq:this.times.length, abnormal:this.times.length>10};
-  }
-  reset() { this.active=false; this.start=0; this.times=[]; }
-}
-class YawnCounter {
-  constructor() { this.cur=0; this.timestamps=[]; }
-  update(open, minFrames=15) {
-    if (open) this.cur++;
-    else { if (this.cur>=minFrames) this.timestamps.push(Date.now()/1000); this.cur=0; }
-    const now=Date.now()/1000;
-    this.timestamps=this.timestamps.filter(t=>now-t<=60);
-    return this.timestamps.length;
-  }
-  reset() { this.cur=0; this.timestamps=[]; }
-}
-class DrowsinessFSM {
-  constructor() { this.state='ALERT'; this.evidence=0; this.perclos=[]; this.framesInState=0; this.sustained=0; this.recovery=0; }
-  _perclos(seconds) { const now=Date.now()/1000; const vals=this.perclos.filter(x=>now-x.t<=seconds); return vals.length ? vals.reduce((s,x)=>s+x.v,0)/vals.length : 0; }
-  _stateIdx(s) { return STATE_ORDER.indexOf(s); }
-  _hysteresis(ev) { const s=this.state; if(s==='ALERT'&&ev>0.45)return'SUSPICIOUS'; if(s==='SUSPICIOUS'&&ev>0.60)return'DROWSY'; if(s==='SUSPICIOUS'&&ev<0.25)return'ALERT'; if(s==='DROWSY'&&ev>0.75)return'CRITICAL'; if(s==='DROWSY'&&ev<0.40)return'SUSPICIOUS'; if(s==='CRITICAL'&&ev<0.55)return'DROWSY'; return s; }
-  update(sig) {
-    const now=Date.now()/1000;
-    this.perclos.push({t:now, v:sig.earClosed?1:0});
-    this.perclos=this.perclos.filter(x=>now-x.t<=60);
-    const p5=this._perclos(5), p60=this._perclos(60);
-    let score=0;
-    let eye=0;
-    if(sig.earClosed) eye+=0.20;
-    if(sig.consecClosed > sig.fps*0.5) eye+=0.20;
-    score+=Math.min(eye,0.40);
-    if(p60>0.20) score+=Math.min((p60-0.20)/(0.50-0.20),1)*0.25;
-    if(sig.headNod) score+=0.15;
-    if(sig.yawnFreq>=3) score+=0.10; else if(sig.mouthOpen) score+=0.05;
-    if(sig.blinkAbnormal) score+=0.10;
-    this.evidence=Math.min(score,1.0);
-    if (sig.consecClosed >= sig.fps*1.0 || p5>=0.70 || p60>=0.70) {
-      this.state = this.state === 'DROWSY' || this.state === 'CRITICAL' ? 'CRITICAL' : 'DROWSY';
-      return {state:this.state, evidence:Math.max(this.evidence,0.80), p5, p60};
-    }
-    const target=this._hysteresis(this.evidence);
-    this.framesInState++;
-    if(this._stateIdx(target)>this._stateIdx(this.state)) {
-      this.sustained++;
-      const need=this.state==='ALERT'?Math.round(sig.fps*0.7):Math.round(sig.fps*0.5);
-      if(this.sustained>=need) { this.state=target; this.sustained=0; this.framesInState=0; }
-    } else if(this._stateIdx(target)<this._stateIdx(this.state)) {
-      this.recovery++;
-      const need=this.state==='CRITICAL'?Math.round(sig.fps*2):Math.round(sig.fps*1);
-      if(this.recovery>=need) { this.state=target; this.recovery=0; this.framesInState=0; }
-    } else { this.sustained=0; this.recovery=0; }
-    return {state:this.state, evidence:this.evidence, p5, p60};
-  }
-  reset() { this.state='ALERT'; this.evidence=0; this.perclos=[]; this.framesInState=0; this.sustained=0; this.recovery=0; }
-}
+const VALID_STATES = ['ALERT','SUSPICIOUS','DROWSY','CRITICAL','STOPPED','PAUSED','LOADING','UNAVAILABLE'];
 
 const video = document.getElementById('camera');
 const canvas = document.getElementById('view');
 const ctx = canvas.getContext('2d');
 const alarmAudio = document.getElementById('alarmAudio');
-let faceMesh = null, mpReady = false, stream = null, running = false, paused = false, hasSession = false, processing = false, sourceMode = 'camera';
-let dynEAR, dynMAR, fsm, blinkTrk, yawnCnt;
-let consecClosed=0, nodCounter=0, lastPitch=0, lastResultTs=0, frameCount=0, lastSound=0;
+const WC = window.WinnerClient;
+
+let faceMesh = null;
+let mpInitPromise = null;
+let mpReady = false;
+let stream = null;
+let running = false;
+let paused = false;
+let processing = false;
+let resetting = false;
+let starting = false;
+let sourceMode = 'camera';
+let objectUrl = null;
+let frameSeq = 0;
+let frameCount = 0;
+let lastResultTs = 0;
+let audioContinuous = false;
+let audioUnlocked = false;
+let audioGeneration = 0;
+let doubleTimers = [];
+let sendInFlight = false;
+let activeSendPromise = Promise.resolve();
+let lastDecision = null;
 let eventHistory = JSON.parse(localStorage.getItem('dms_browser_event_history') || '[]');
 let lastLoggedEvent = {state:'', reasons:'', at:0};
-let objectUrl = null;
+const sessionClock = new WC.ActiveSessionClock({ now: () => performance.now() });
+const runGuard = new WC.RunGenerationGuard();
+const lifecycleGuard = new WC.RunGenerationGuard();
+const audioState = new WC.AudioCommandState();
 
-function resetAlgorithms() { dynEAR=new DynamicEAR(); dynMAR=new DynamicMAR(150,0.7,0.15); fsm=new DrowsinessFSM(); blinkTrk=new BlinkTracker(); yawnCnt=new YawnCounter(); consecClosed=0; nodCounter=0; frameCount=0; lastPitch=0; updateStatus({state:'STOPPED', evidence:0, metrics:{}, flags:{}, reasons:[], fps:0}); }
-resetAlgorithms();
+const api = new WC.WinnerApiClient({
+  sourceMode,
+  targetFps: getTargetFps(),
+  onSessionReset: ({reason}) => {
+    runGuard.invalidate();
+    clearBatchState();
+    resetAudioState();
+    if(running) sessionClock.start();
+    if (reason === 'lost') showNotice('Phiên server đã hết hạn. Đã tạo phiên mới và hiệu chuẩn lại.', true);
+    if (reason === 'gap') showNotice('Kết nối bị gián đoạn quá lâu. Đã tạo phiên mới và hiệu chuẩn lại.', true);
+  },
+});
+const batcher = new WC.LandmarkBatcher({ onFlush: sendFrames, canFlush:()=>!sendInFlight });
 
 function getTargetFps(){ return Number(document.getElementById('targetFps').value || 20); }
-function dist(a,b){ return Math.hypot(a.x-b.x, a.y-b.y); }
-function calcEAR(pts){ const A=dist(pts[1],pts[5]), B=dist(pts[2],pts[4]), C=dist(pts[0],pts[3]); return C>1e-6?(A+B)/(2*C):0; }
-function calcMAR(pts){ const A=dist(pts[2],pts[3]), B=dist(pts[0],pts[1]); return B>1e-6?A/B:0; }
-function estimateHeadPose(lms){ const nose=lms[1], chin=lms[152], lEye=lms[33], rEye=lms[263]; const eyeMidY=(lEye.y+rEye.y)/2; const eyeLineW=Math.abs(rEye.x-lEye.x)+1e-6; const pitch=(nose.y-eyeMidY)/eyeLineW*80; const faceLW=(nose.x-lEye.x), faceRW=(rEye.x-nose.x); const yaw=(faceRW-faceLW)/(faceRW+faceLW+1e-6)*60; const roll=Math.atan2(rEye.y-lEye.y, rEye.x-lEye.x)*180/Math.PI; return {pitch,yaw,roll}; }
-function stateLabel(s){ return {ALERT:'ALERT',SUSPICIOUS:'SUSPICIOUS',DROWSY:'DROWSY',CRITICAL:'CRITICAL',STOPPED:'STOPPED',PAUSED:'PAUSED',LOADING:'LOADING'}[s] || s; }
 function fmt(n,d=4){ return Number.isFinite(Number(n)) ? Number(n).toFixed(d) : '-'; }
-function cls(state){ return ['ALERT','SUSPICIOUS','DROWSY','CRITICAL','STOPPED','PAUSED','LOADING'].includes(state)?state:'STOPPED'; }
+function cls(state){ return VALID_STATES.includes(state) ? state : 'STOPPED'; }
+function stateLabel(s){ return s === 'UNAVAILABLE' ? 'SERVER UNAVAILABLE' : (s || 'STOPPED'); }
 function setMetric(boxId, valId, text, warn=false){ document.getElementById(valId).textContent=text; document.getElementById(boxId).classList.toggle('warn', !!warn); }
-function pad(n){ return String(n).padStart(2,'0'); }
-function fmtDateTime(d){ return `${pad(d.getDate())}/${pad(d.getMonth()+1)}/${d.getFullYear()} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`; }
+function showNotice(message, keepVisible=false){ const hint=document.getElementById('hint'); hint.style.display='block'; hint.textContent=message; if(!keepVisible && running) setTimeout(()=>{ if(running) hint.style.display='none'; }, 3500); }
+function clearBatchState(){ batcher.reset(); frameSeq = 0; frameCount = 0; api.nextBatchSeq = 1; sessionClock.reset(); }
+function resetPageLifecycleState(){
+  const state=WC.pageLifecycleResetState();
+  running=state.running; paused=state.paused; processing=state.processing;
+  resetting=state.resetting; starting=state.starting; sendInFlight=state.sendInFlight;
+  lastDecision=null; lastResultTs=0;
+  batcher.reset(); sessionClock.reset();
+}
+function setApiMode(){ api.setMode(sourceMode === 'file' ? 'file' : 'camera', getTargetFps()); }
+function appendText(parent, tag, className, text){ const el=document.createElement(tag); if(className) el.className=className; el.textContent=String(text ?? ''); parent.appendChild(el); return el; }
+
 function saveHistory(){ localStorage.setItem('dms_browser_event_history', JSON.stringify(eventHistory.slice(0,100))); }
-function renderEventHistory(){ const box=document.getElementById('eventHistory'); box.innerHTML=''; if(!eventHistory.length){ box.innerHTML='<span class="ok">Chưa có sự kiện</span>'; return; } eventHistory.slice(0,8).forEach(ev=>{ const item=document.createElement('div'); item.className='event-item'; item.innerHTML=`<div><span class="event-time">${ev.time}</span> — <span class="event-state ${ev.state}">${ev.state}</span></div><div class="event-meta">Score ${ev.evidence} | P5 ${ev.p5} | P60 ${ev.p60}</div><div class="event-meta">EAR ${ev.ear}/${ev.ear_threshold} | MAR ${ev.mar}/${ev.mar_threshold}</div><div class="event-reason">${ev.reasons || '-'}</div>`; box.appendChild(item); }); }
-function maybeLogEvent(s){ const state=s.state||''; if(!['SUSPICIOUS','DROWSY','CRITICAL'].includes(state)) return; const reasons=(s.reasons||[]).join('|'); const nowMs=Date.now(); if(lastLoggedEvent.state===state && lastLoggedEvent.reasons===reasons && nowMs-lastLoggedEvent.at<10000) return; lastLoggedEvent={state,reasons,at:nowMs}; const m=s.metrics||{}; const ev={time:fmtDateTime(new Date()), iso_time:new Date().toISOString(), state, evidence:fmt(s.evidence,2), ear:fmt(m.ear,4), ear_threshold:fmt(m.ear_threshold,4), mar:fmt(m.mar,4), mar_threshold:fmt(m.mar_threshold,4), p5:fmt(m.perclos_short,4), p60:fmt(m.perclos,4), blink:m.blink_frequency??'-', yawn:m.yawn_frequency??'-', pitch:fmt(m.pitch,2), head_nod:m.head_nod_detected?'NOD':'-', reasons:(s.reasons||[]).join(';')}; eventHistory.unshift(ev); eventHistory=eventHistory.slice(0,100); saveHistory(); renderEventHistory(); }
-function exportHistoryCsv(){ const cols=['time','iso_time','state','evidence','ear','ear_threshold','mar','mar_threshold','p5','p60','blink','yawn','pitch','head_nod','reasons']; const esc=v=>'"'+String(v??'').replaceAll('"','""')+'"'; const csv=[cols.join(',')].concat(eventHistory.map(ev=>cols.map(c=>esc(ev[c])).join(','))).join('\n'); const blob=new Blob([csv],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='dms_event_history.csv'; a.click(); URL.revokeObjectURL(a.href); }
+function renderEventHistory(){
+  const box=document.getElementById('eventHistory');
+  box.innerHTML='';
+  if(!eventHistory.length){ box.innerHTML='<span class="ok">Chưa có sự kiện</span>'; return; }
+  eventHistory.slice(0,8).forEach(ev=>{
+    const item=document.createElement('div');
+    item.className='event-item';
+    const head=document.createElement('div');
+    appendText(head, 'span', 'event-time', ev.time);
+    head.appendChild(document.createTextNode(' - '));
+    appendText(head, 'span', 'event-state '+cls(String(ev.state || '')), ev.state);
+    item.appendChild(head);
+    appendText(item, 'div', 'event-meta', `P ${ev.probability ?? '-'} / T ${ev.threshold ?? '-'} | Guard ${ev.guard ?? '-'}`);
+    appendText(item, 'div', 'event-meta', `Profile ${ev.profile ?? '-'} | Model ${ev.model_hash ?? '-'}`);
+    appendText(item, 'div', 'event-meta', `P5 ${ev.p5 ?? '-'} | P60 ${ev.p60 ?? '-'} | EAR ${ev.ear ?? '-'}/${ev.ear_threshold ?? '-'}`);
+    appendText(item, 'div', 'event-reason', ev.reasons || '-');
+    box.appendChild(item);
+  });
+}
+function maybeLogEvent(decision){
+  const state=WC.normalizeState(decision);
+  if(!['SUSPICIOUS','DROWSY','CRITICAL'].includes(state)) return;
+  const reasons=(decision.reasons||[]).join('|');
+  const nowMs=Date.now();
+  if(lastLoggedEvent.state===state && lastLoggedEvent.reasons===reasons && nowMs-lastLoggedEvent.at<10000) return;
+  lastLoggedEvent={state,reasons,at:nowMs};
+  eventHistory.unshift(WC.serializeHistoryEntry(decision, new Date()));
+  eventHistory=eventHistory.slice(0,100);
+  saveHistory();
+  renderEventHistory();
+}
+function exportHistoryCsv(){ const blob=new Blob([WC.historyToCsv(eventHistory)],{type:'text/csv;charset=utf-8'}); const a=document.createElement('a'); a.href=URL.createObjectURL(blob); a.download='dms_event_history.csv'; a.click(); URL.revokeObjectURL(a.href); }
 function clearEventHistory(){ eventHistory=[]; saveHistory(); renderEventHistory(); }
 
 function updateControlButtons(){
-  const cont=document.getElementById('continueBtn');
-  const stopBtn=document.getElementById('stopBtn');
-  if(cont) cont.disabled = !paused;
-  if(stopBtn) stopBtn.disabled = !running;
+  const busy = starting || resetting;
+  document.getElementById('startBtn').disabled = busy;
+  document.getElementById('continueBtn').disabled = !paused || busy;
+  document.getElementById('stopBtn').disabled = !running || busy;
+  document.getElementById('resetBtn').disabled = busy;
+  document.getElementById('cameraFacing').disabled = busy;
+  document.getElementById('targetFps').disabled = busy;
+  document.getElementById('videoFile').disabled = busy;
+  document.getElementById('uploadLabel').style.pointerEvents = busy ? 'none' : 'auto';
+  document.getElementById('uploadLabel').style.opacity = busy ? '0.55' : '1';
 }
 function showPausedUi(){
   const stateEl=document.getElementById('state');
@@ -338,158 +277,326 @@ function showPausedUi(){
   stateEl.textContent='PAUSED';
   document.getElementById('topStatus').textContent=`PAUSED | ${sourceMode} | ${mpReady?'MediaPipe ready':'loading'}`;
   document.getElementById('fps').textContent='FPS xử lý: 0 | Tạm dừng';
-  const hint=document.getElementById('hint');
-  hint.style.display='block';
-  hint.textContent='Đã tạm dừng. Bấm Continue để chạy tiếp với ngưỡng và lịch sử hiện tại. Bấm Start camera để bắt đầu phiên mới và hiệu chuẩn lại.';
+  showNotice('Đã tạm dừng. Bấm Continue để chạy tiếp với phiên server hiện tại. Bấm Start camera để bắt đầu phiên mới.', true);
   document.getElementById('noFace').style.display='none';
   document.getElementById('calib').style.display='none';
   updateControlButtons();
 }
 
-function unlockAudio(){ alarmAudio.volume=0; alarmAudio.play().then(()=>{alarmAudio.pause(); alarmAudio.currentTime=0; alarmAudio.volume=1;}).catch(()=>{alarmAudio.volume=1;}); }
-function playWarningSound(state){ if(!document.getElementById('soundEnable').checked) return; if(state!=='DROWSY' && state!=='CRITICAL') return; const gap=state==='CRITICAL'?1200:5000; const now=Date.now(); if(now-lastSound<gap) return; lastSound=now; alarmAudio.currentTime=0; alarmAudio.play().catch(()=>{document.getElementById('topStatus').textContent='Trình duyệt chặn âm thanh, hãy bấm vào trang một lần.';}); }
-function updateStatus(s){ s=s||{}; const m=s.metrics||{}, f=s.flags||{}; const stateEl=document.getElementById('state'); stateEl.className='state '+cls(s.state); stateEl.textContent=stateLabel(s.state||'STOPPED'); document.getElementById('evidence').textContent=fmt(s.evidence||0,2); document.getElementById('fps').textContent=`FPS xử lý: ${fmt(s.fps||0,1)} | Frame ${s.frame_count||0}`; document.getElementById('topStatus').textContent=`${s.state||'-'} | ${sourceMode} | ${mpReady?'MediaPipe ready':'loading'}`; setMetric('box-ear','ear',`${fmt(m.ear,4)} / ${fmt(m.ear_threshold,4)}`, f.ear_below_threshold); setMetric('box-mar','mar',`${fmt(m.mar,4)} / ${fmt(m.mar_threshold,4)}`, f.mar_above_threshold); setMetric('box-p60','p60',fmt(m.perclos,4), f.perclos_high); setMetric('box-p5','p5',fmt(m.perclos_short,4), f.perclos_short_high); setMetric('box-blink','blink',m.blink_frequency??'-', f.blink_high); setMetric('box-yawn','yawn',m.yawn_frequency??'-', f.yawn_high); setMetric('box-pitch','pitch',fmt(m.pitch,2)+'°', f.pitch_high); setMetric('box-closed','closed',m.eyes_closed_consecutive??'-', f.closed_high); setMetric('box-nod','nod',m.head_nod_detected?'NOD':'-', f.head_nod); setMetric('box-face','face',m.face_detected?'Detected':'No face', !m.face_detected && running); const reasons=document.getElementById('reasons'); reasons.innerHTML=''; if(s.reasons&&s.reasons.length) s.reasons.forEach(r=>{const e=document.createElement('div'); e.className='tag'; e.textContent=r; reasons.appendChild(e);}); else reasons.innerHTML='<span class="ok">Không có</span>'; maybeLogEvent(s); playWarningSound(s.state); updateControlButtons(); }
+function clearDoubleTimers(){ doubleTimers.forEach(id=>clearTimeout(id)); doubleTimers=[]; }
+function stopAudioPlayback(){
+  audioGeneration += 1;
+  clearDoubleTimers();
+  alarmAudio.pause();
+  alarmAudio.currentTime=0;
+  alarmAudio.loop=false;
+  audioContinuous=false;
+}
+function resetAudioState(){ audioState.reset(); stopAudioPlayback(); }
+function suspendAudio(){ stopAudioPlayback(); }
+function unlockAudio(){
+  if(audioUnlocked || audioContinuous || audioState.continuousRequested) return;
+  const generation=++audioGeneration;
+  alarmAudio.volume=0;
+  alarmAudio.play().then(()=>{
+    alarmAudio.volume=1;
+    if(generation!==audioGeneration || audioState.continuousRequested) return;
+    alarmAudio.pause(); alarmAudio.currentTime=0; audioUnlocked=true;
+  }).catch(()=>{ alarmAudio.volume=1; });
+}
+function playDoubleAudio(){
+  if(audioState.continuousRequested) return;
+  clearDoubleTimers();
+  alarmAudio.loop=false; alarmAudio.currentTime=0;
+  alarmAudio.play().catch(()=>{document.getElementById('topStatus').textContent='Trình duyệt chặn âm thanh, hãy bấm vào trang một lần.';});
+  doubleTimers.push(setTimeout(()=>{ alarmAudio.currentTime=0; alarmAudio.play().catch(()=>{}); }, 450));
+}
+function reconcileContinuousAudio(){
+  const enabled=document.getElementById('soundEnable').checked;
+  if(!enabled || paused || !running || !audioState.continuousRequested){
+    if(audioContinuous || alarmAudio.loop) stopAudioPlayback();
+    return;
+  }
+  if(audioContinuous) return;
+  clearDoubleTimers();
+  const generation=++audioGeneration;
+  alarmAudio.loop=true; alarmAudio.currentTime=0;
+  alarmAudio.play().then(()=>{
+    if(generation===audioGeneration && audioState.continuousRequested && running && !paused){ audioContinuous=true; audioUnlocked=true; }
+    else stopAudioPlayback();
+  }).catch(()=>{ if(generation===audioGeneration) document.getElementById('topStatus').textContent='Trình duyệt chặn âm thanh, hãy bấm vào trang một lần.'; });
+}
+function applyAudioCommands(decision, freshServerResponse){
+  const commands=WC.audioCommandsForRender(decision, freshServerResponse);
+  const update=audioState.consume(commands);
+  if(document.getElementById('soundEnable').checked){ for(let i=0;i<update.doubleCount;i+=1) playDoubleAudio(); }
+  reconcileContinuousAudio();
+}
+
+function updateStatus(decision, fps=0, freshServerResponse=false){
+  const d=decision||{};
+  const m=d.metrics||{};
+  const state=WC.normalizeState(d);
+  const stateEl=document.getElementById('state');
+  stateEl.className='state '+cls(state);
+  stateEl.textContent=stateLabel(state);
+  document.getElementById('evidence').textContent=fmt(d.probability ?? 0,2);
+  document.getElementById('fps').textContent=`FPS xử lý: ${fmt(fps,1)} | In ${d.input_frames ?? frameCount} | Virtual ${d.virtual_frames ?? '-'}`;
+  document.getElementById('topStatus').textContent=`${state} | ${sourceMode} | ${mpReady?'MediaPipe ready':'loading'}`;
+  setMetric('box-ear','ear',`${fmt(m.ear,4)} / ${fmt(m.ear_threshold,4)}`, (d.reasons||[]).some(r=>String(r).includes('EAR')));
+  setMetric('box-mar','mar',`${fmt(m.mar,4)} / ${fmt(m.mar_threshold,4)}`, (d.reasons||[]).some(r=>String(r).includes('MAR')||String(r).includes('YAWN')));
+  setMetric('box-p60','p60',fmt(m.perclos,4), (d.reasons||[]).some(r=>String(r).includes('PERCLOS')));
+  setMetric('box-p5','p5',fmt(m.perclos_short,4), (d.reasons||[]).some(r=>String(r).includes('PERCLOS')));
+  setMetric('box-blink','blink',m.blink_frequency??'-', (d.reasons||[]).some(r=>String(r).includes('BLINK')));
+  setMetric('box-yawn','yawn',m.yawn_frequency??'-', (d.reasons||[]).some(r=>String(r).includes('YAWN')));
+  setMetric('box-pitch','pitch',fmt(m.pitch,2)+' deg', (d.reasons||[]).some(r=>String(r).includes('PITCH')||String(r).includes('NOD')));
+  setMetric('box-closed','closed',m.eyes_closed_consecutive??'-', (d.reasons||[]).some(r=>String(r).includes('CLOSED')));
+  setMetric('box-nod','nod',m.head_nod_detected?'NOD':'-', (d.reasons||[]).some(r=>String(r).includes('NOD')));
+  setMetric('box-face','face',m.face_detected?'Detected':'No face', !m.face_detected && running);
+  const reasons=document.getElementById('reasons');
+  reasons.innerHTML='';
+  if(d.reasons&&d.reasons.length) d.reasons.forEach(r=>{const e=document.createElement('div'); e.className='tag'; e.textContent=r; reasons.appendChild(e);});
+  else reasons.innerHTML='<span class="ok">Không có</span>';
+  const c=d.calibration||{};
+  const calibrated = Boolean(c.runtime_calibrated);
+  const target = Number(c.runtime_target_frames || 0);
+  const valid = Number(c.valid_face_frames || 0);
+  const runtimeProgress = target > 0 ? Math.min(1, valid / target) : 0;
+  const dynamicProgress = Math.min(1, Number(c.dynamic_total_progress || 0));
+  const progress = Math.max(runtimeProgress, dynamicProgress);
+  const dynamicLocked = c.dynamic_phase === 'LOCKED';
+  const calib=document.getElementById('calib');
+  if(running && (!calibrated || !dynamicLocked)){
+    const pct=Math.round(progress*100);
+    calib.style.display='block';
+    document.getElementById('calibFill').style.width=pct+'%';
+    document.getElementById('calibText').textContent=`${pct}% | runtime ${valid}/${target || 60} | ${c.dynamic_phase || 'WARMUP'}`;
+  } else calib.style.display='none';
+  maybeLogEvent(d);
+  applyAudioCommands(d, freshServerResponse);
+  updateControlButtons();
+}
+function showServerUnavailable(error){
+  lifecycleGuard.invalidate();
+  runGuard.invalidate();
+  resetAudioState();
+  starting=false;
+  running=false;
+  paused=false;
+  processing=false;
+  batcher.reset();
+  sessionClock.pause();
+  if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
+  video.pause();
+  if(sourceMode==='camera') video.srcObject=null;
+  const decision={state:'UNAVAILABLE', probability:0, reasons:['SERVER_UNAVAILABLE'], metrics:{face_detected:false}, input_frames:frameCount};
+  updateStatus(decision, 0);
+  showNotice('SERVER UNAVAILABLE: '+((error && error.message) || 'Không gọi được backend. Không dùng fallback cục bộ.'), true);
+}
 
 function drawNoFace(){ const w=video.videoWidth||640, h=video.videoHeight||480; if(canvas.width!==w||canvas.height!==h){canvas.width=w; canvas.height=h;} ctx.drawImage(video,0,0,w,h); document.getElementById('noFace').style.display='block'; }
 function drawOverlay(lms, state){ const w=video.videoWidth||640, h=video.videoHeight||480; if(canvas.width!==w||canvas.height!==h){canvas.width=w; canvas.height=h;} ctx.drawImage(video,0,0,w,h); document.getElementById('noFace').style.display='none'; const stateColor={ALERT:'#3ee07a',SUSPICIOUS:'#ffd166',DROWSY:'#ff9f1c',CRITICAL:'#ff4d5a'}[state]||'#53c7ff'; function pt(i){return [lms[i].x*w,lms[i].y*h];} function drawPts(indices,color,closed=true){ ctx.strokeStyle=color; ctx.fillStyle=color; ctx.lineWidth=Math.max(1,w/420); ctx.beginPath(); indices.forEach((i,k)=>{const [x,y]=pt(i); if(k===0)ctx.moveTo(x,y); else ctx.lineTo(x,y);}); if(closed)ctx.closePath(); ctx.stroke(); indices.forEach(i=>{const[x,y]=pt(i); ctx.beginPath(); ctx.arc(x,y,Math.max(1.8,w/360),0,Math.PI*2); ctx.fill();}); }
   drawPts(LEFT_EYE,'#53c7ff',true); drawPts(RIGHT_EYE,'#53c7ff',true); drawPts(MOUTH_4,'#ffd166',true); const nose=pt(1), chin=pt(152), le=pt(33), re=pt(263), lm=pt(61), rm=pt(291); ctx.strokeStyle='#5cff99'; ctx.lineWidth=Math.max(1,w/380); ctx.beginPath(); ctx.moveTo(le[0],le[1]); ctx.lineTo(re[0],re[1]); ctx.moveTo(lm[0],lm[1]); ctx.lineTo(rm[0],rm[1]); ctx.stroke(); ctx.strokeStyle=stateColor; ctx.beginPath(); ctx.moveTo(nose[0],nose[1]); ctx.lineTo(chin[0],chin[1]); ctx.stroke(); }
 
-async function initMediaPipe(){ if(mpReady) return; updateStatus({state:'LOADING', evidence:0, metrics:{}, flags:{}, reasons:[], fps:0}); if(typeof FaceMesh === 'undefined') throw new Error('Không tải được MediaPipe FaceMesh. Hãy kiểm tra Internet/CDN.'); faceMesh = new FaceMesh({locateFile:(file)=>`https://cdn.jsdelivr.net/npm/@mediapipe/face_mesh/${file}`}); faceMesh.setOptions({maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.5, minTrackingConfidence:0.5}); faceMesh.onResults(onFaceResults); await faceMesh.initialize(); mpReady=true; }
+async function initMediaPipe(){
+  if(mpReady) return;
+  if(!mpInitPromise){
+    mpInitPromise=(async()=>{
+      updateStatus({state:'LOADING', probability:0, metrics:{}, reasons:[]}, 0);
+      if(typeof FaceMesh === 'undefined') throw new Error('Không tải được MediaPipe FaceMesh self-hosted.');
+      const candidate=new FaceMesh({locateFile:(file)=>`/static/vendor/face_mesh/${file}`});
+      candidate.setOptions({maxNumFaces:1, refineLandmarks:true, minDetectionConfidence:0.5, minTrackingConfidence:0.5});
+      candidate.onResults(onFaceResults);
+      await candidate.initialize();
+      faceMesh=candidate; mpReady=true;
+    })().catch(error=>{ mpInitPromise=null; throw error; });
+  }
+  await mpInitPromise;
+}
 async function openCameraRobust(facingMode){ if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Trình duyệt không hỗ trợ getUserMedia hoặc trang chưa chạy HTTPS.'); const tries=[{video:{facingMode:{ideal:facingMode},width:{ideal:640},height:{ideal:480}},audio:false},{video:{facingMode},audio:false},{video:{width:{ideal:640},height:{ideal:480}},audio:false},{video:true,audio:false}]; let last=null; for(const c of tries){ try{return await navigator.mediaDevices.getUserMedia(c);}catch(e){last=e;} } throw last||new Error('Không mở được camera'); }
-function fullStop(resetDisplay=true){
-  running=false; paused=false; hasSession=false; processing=false;
-  if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
+function stopStream(value){ if(value) value.getTracks().forEach(track=>track.stop()); }
+function beginLifecycle(){
+  if(!WC.canBeginLifecycle(starting, resetting)) return null;
+  starting=true;
+  const generation=lifecycleGuard.invalidate();
+  updateControlButtons();
+  return generation;
+}
+function finishLifecycle(generation){ if(lifecycleGuard.isCurrent(generation)){ starting=false; updateControlButtons(); } }
+async function fullStop(resetDisplay=true, invalidateLifecycle=true){
+  if(invalidateLifecycle){ lifecycleGuard.invalidate(); starting=false; }
+  runGuard.invalidate();
+  running=false; paused=false; processing=false; resetAudioState(); batcher.reset();
+  sessionClock.reset();
+  await activeSendPromise.catch(()=>{});
+  stopStream(stream); stream=null;
   if(objectUrl){URL.revokeObjectURL(objectUrl); objectUrl=null;}
   video.pause(); video.removeAttribute('src'); video.srcObject=null;
-  document.getElementById('noFace').style.display='none';
-  document.getElementById('calib').style.display='none';
-  if(resetDisplay){
-    ctx.clearRect(0,0,canvas.width,canvas.height);
-    updateStatus({state:'STOPPED', evidence:0, metrics:{}, flags:{}, reasons:[], fps:0});
-    const hint=document.getElementById('hint');
-    hint.style.display='block';
-    hint.textContent='Bấm Start camera để bắt đầu phiên mới, hoặc Upload video để kiểm thử bằng file có sẵn.';
-  }
+  document.getElementById('noFace').style.display='none'; document.getElementById('calib').style.display='none';
+  await api.deleteSession(); clearBatchState();
+  if(resetDisplay){ ctx.clearRect(0,0,canvas.width,canvas.height); updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:[]}, 0); showNotice('Bấm Start camera để bắt đầu phiên mới, hoặc Upload video để kiểm thử bằng file có sẵn.', true); }
   updateControlButtons();
 }
 function pauseSession(){
-  if(!running && !hasSession) return;
-  running=false; paused=true; processing=false;
-  if(sourceMode==='camera'){
-    if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;}
-    video.pause(); video.srcObject=null;
-  } else {
-    video.pause();
-  }
+  if(!running && !api.sessionId) return;
+  lifecycleGuard.invalidate(); starting=false;
+  runGuard.invalidate();
+  running=false; paused=true; processing=false; suspendAudio(); batcher.reset();
+  sessionClock.pause();
+  if(sourceMode==='camera'){ if(stream){stream.getTracks().forEach(t=>t.stop()); stream=null;} video.pause(); video.srcObject=null; }
+  else video.pause();
   showPausedUi();
 }
 async function continueSession(){
   unlockAudio();
-  if(!paused || !hasSession) return;
+  if(!paused || !api.sessionId) return;
+  const generation=beginLifecycle(); if(generation===null) return;
+  let candidateStream=null;
   try{
     await initMediaPipe();
+    if(!lifecycleGuard.isCurrent(generation)) return;
     if(sourceMode==='camera'){
-      stream=await openCameraRobust(document.getElementById('cameraFacing').value);
-      video.srcObject=stream;
-      video.muted=true;
-      video.playsInline=true;
-    } else if(sourceMode==='video_file'){
-      if(!objectUrl) throw new Error('Không còn video để chạy tiếp. Hãy chọn lại file video.');
-    }
+      candidateStream=await openCameraRobust(document.getElementById('cameraFacing').value);
+      if(!lifecycleGuard.isCurrent(generation)){ stopStream(candidateStream); return; }
+      video.srcObject=candidateStream; video.muted=true; video.playsInline=true;
+    } else if(sourceMode==='file' && !objectUrl) throw new Error('Không còn video để chạy tiếp. Hãy chọn lại file video.');
     await video.play();
-    running=true; paused=false; processing=false; lastResultTs=0;
-    document.getElementById('hint').style.display='none';
-    updateControlButtons();
-    loop();
-  } catch(e){
-    document.getElementById('hint').style.display='block';
-    document.getElementById('hint').textContent='Không tiếp tục được: '+(e.message||e);
-    showPausedUi();
-  }
+    if(!lifecycleGuard.isCurrent(generation)){ stopStream(candidateStream); return; }
+    if(candidateStream){ stream=candidateStream; candidateStream=null; }
+    sessionClock.resume(); running=true; paused=false; processing=false; lastResultTs=0; document.getElementById('hint').style.display='none'; reconcileContinuousAudio(); loop();
+  } catch(e){ stopStream(candidateStream); if(lifecycleGuard.isCurrent(generation)){ showNotice('Không tiếp tục được: '+(e.message||e), true); showPausedUi(); } }
+  finally{ finishLifecycle(generation); }
 }
 async function startCamera(){
-  unlockAudio();
-  fullStop(false);
-  resetAlgorithms();
-  sourceMode='camera';
+  const generation=beginLifecycle(); if(generation===null) return;
+  let candidateStream=null; let candidateSession=null;
   try{
-    await initMediaPipe();
-    stream=await openCameraRobust(document.getElementById('cameraFacing').value);
-    video.srcObject=stream; video.muted=true; video.playsInline=true;
-    await video.play();
-    running=true; paused=false; hasSession=true;
-    document.getElementById('hint').style.display='none';
-    updateControlButtons();
-    loop();
+    const stopPromise=fullStop(false, false); unlockAudio(); await stopPromise; sourceMode='camera'; setApiMode(); clearBatchState();
+    await initMediaPipe(); if(!lifecycleGuard.isCurrent(generation)) return;
+    candidateStream=await openCameraRobust(document.getElementById('cameraFacing').value);
+    if(!lifecycleGuard.isCurrent(generation)){ stopStream(candidateStream); return; }
+    video.srcObject=candidateStream; video.muted=true; video.playsInline=true; await video.play();
+    if(!lifecycleGuard.isCurrent(generation)){ stopStream(candidateStream); return; }
+    candidateSession=await api.requestSession();
+    if(!lifecycleGuard.isCurrent(generation)){ await api.deleteSessionId(candidateSession.session_id); stopStream(candidateStream); return; }
+    api.activateSession(candidateSession, 'created'); candidateSession=null;
+    stream=candidateStream; candidateStream=null;
+    sessionClock.start(); running=true; paused=false; document.getElementById('hint').style.display='none'; loop();
   } catch(e){
-    document.getElementById('hint').style.display='block';
-    document.getElementById('hint').textContent='Không mở được camera: '+(e.message||e)+'. Hãy mở bằng Safari/Chrome trực tiếp, dùng HTTPS và cho phép quyền camera.';
-    updateStatus({state:'STOPPED', evidence:0, metrics:{}, flags:{}, reasons:['CAMERA_ERROR'], fps:0});
-  }
+    stopStream(candidateStream);
+    if(candidateSession) await api.deleteSessionId(candidateSession.session_id);
+    if(lifecycleGuard.isCurrent(generation)){ showNotice('Không mở được camera/server: '+(e.message||e), true); updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:['CAMERA_OR_SERVER_ERROR']}, 0); }
+  } finally{ finishLifecycle(generation); }
 }
-function waitForVideoReady(el, timeoutMs=7000){
-  return new Promise((resolve, reject)=>{
-    if(el.readyState >= 2 && el.videoWidth) return resolve();
-    let done=false;
-    const cleanup=()=>{ el.removeEventListener('loadedmetadata', ok); el.removeEventListener('canplay', ok); el.removeEventListener('error', fail); clearTimeout(timer); };
-    const ok=()=>{ if(done) return; if(el.readyState>=1){ done=true; cleanup(); resolve(); } };
-    const fail=()=>{ if(done) return; done=true; cleanup(); reject(new Error('Trình duyệt không đọc được file video này. Hãy thử MP4/H.264 hoặc MOV.')); };
-    const timer=setTimeout(()=>{ if(done) return; done=true; cleanup(); reject(new Error('Video tải quá lâu hoặc định dạng không hỗ trợ.')); }, timeoutMs);
-    el.addEventListener('loadedmetadata', ok);
-    el.addEventListener('canplay', ok);
-    el.addEventListener('error', fail);
-    el.load();
-  });
-}
+function waitForVideoReady(el, timeoutMs=7000){ return new Promise((resolve, reject)=>{ if(el.readyState >= 2 && el.videoWidth) return resolve(); let done=false; const cleanup=()=>{ el.removeEventListener('loadedmetadata', ok); el.removeEventListener('canplay', ok); el.removeEventListener('error', fail); clearTimeout(timer); }; const ok=()=>{ if(done) return; if(el.readyState>=1){ done=true; cleanup(); resolve(); } }; const fail=()=>{ if(done) return; done=true; cleanup(); reject(new Error('Trình duyệt không đọc được file video này. Hãy thử MP4/H.264 hoặc MOV.')); }; const timer=setTimeout(()=>{ if(done) return; done=true; cleanup(); reject(new Error('Video tải quá lâu hoặc định dạng không hỗ trợ.')); }, timeoutMs); el.addEventListener('loadedmetadata', ok); el.addEventListener('canplay', ok); el.addEventListener('error', fail); el.load(); }); }
 async function startVideoFile(file){
-  unlockAudio();
-  fullStop(false);
-  resetAlgorithms();
-  sourceMode='video_file';
+  const generation=beginLifecycle(); if(generation===null) return;
+  let candidateUrl=null; let candidateSession=null;
   try{
-    await initMediaPipe();
-    if(objectUrl) URL.revokeObjectURL(objectUrl);
-    objectUrl=URL.createObjectURL(file);
-    video.srcObject=null;
-    video.setAttribute('playsinline','');
-    video.setAttribute('webkit-playsinline','');
-    video.loop=false;
-    video.muted=true;
-    video.controls=false;
-    video.src=objectUrl;
-    await waitForVideoReady(video);
-    video.currentTime=0;
-    await video.play();
-    running=true;
-    paused=false;
-    hasSession=true;
-    lastResultTs=0;
-    frameCount=0;
-    document.getElementById('hint').style.display='none';
-    loop(performance.now());
+    const stopPromise=fullStop(false, false); unlockAudio(); await stopPromise; sourceMode='file'; setApiMode(); clearBatchState();
+    await initMediaPipe(); if(!lifecycleGuard.isCurrent(generation)) return;
+    candidateUrl=URL.createObjectURL(file); video.srcObject=null; video.setAttribute('playsinline',''); video.setAttribute('webkit-playsinline',''); video.loop=false; video.muted=true; video.controls=false; video.src=candidateUrl;
+    await waitForVideoReady(video); video.currentTime=0; await video.play();
+    if(!lifecycleGuard.isCurrent(generation)){ URL.revokeObjectURL(candidateUrl); return; }
+    candidateSession=await api.requestSession();
+    if(!lifecycleGuard.isCurrent(generation)){ await api.deleteSessionId(candidateSession.session_id); URL.revokeObjectURL(candidateUrl); return; }
+    api.activateSession(candidateSession, 'created'); candidateSession=null;
+    objectUrl=candidateUrl; candidateUrl=null;
+    sessionClock.start(); running=true; paused=false; lastResultTs=0; document.getElementById('hint').style.display='none'; loop(performance.now());
   } catch(err){
-    if(objectUrl){URL.revokeObjectURL(objectUrl); objectUrl=null;}
-    document.getElementById('hint').style.display='block';
-    document.getElementById('hint').textContent='Không mở được video: '+(err.message||err)+'. Nên dùng file MP4/H.264 để trình duyệt đọc ổn định.';
-    updateStatus({state:'STOPPED', evidence:0, metrics:{}, flags:{}, reasons:['VIDEO_FILE_ERROR'], fps:0});
+    if(candidateUrl) URL.revokeObjectURL(candidateUrl);
+    if(candidateSession) await api.deleteSessionId(candidateSession.session_id);
+    if(lifecycleGuard.isCurrent(generation)){ showNotice('Không mở được video/server: '+(err.message||err)+'. Nên dùng file MP4/H.264 để trình duyệt đọc ổn định.', true); updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:['VIDEO_FILE_OR_SERVER_ERROR']}, 0); }
+  } finally{ finishLifecycle(generation); }
+}
+async function loop(ts=performance.now()){ if(!running) return; requestAnimationFrame(loop); if(processing || video.readyState<2) return; if(!batcher.canAccept()) return; const interval=1000/getTargetFps(); if(ts-lastResultTs < interval) return; processing=true; try{ await faceMesh.send({image:video}); } catch(e){ document.getElementById('topStatus').textContent='MediaPipe error: '+(e.message||e); } finally{ processing=false; } }
+function enqueueFrame(faceLandmarks){
+  const nextSeq=frameSeq+1;
+  const timestamp=sessionClock.timestampMs(sourceMode, video);
+  const packet=WC.createFramePacket({ seq: nextSeq, timestampMs: timestamp, width: video.videoWidth||canvas.width||0, height: video.videoHeight||canvas.height||0, faceLandmarks });
+  if(!batcher.enqueue(packet)){ document.getElementById('topStatus').textContent='SERVER BUSY | bounded backpressure'; return false; }
+  frameSeq=nextSeq; frameCount+=1; return true;
+}
+function sendFrames(frames){
+  if(sendInFlight || !frames.length) return;
+  const generation=runGuard.capture();
+  const sessionId=api.sessionId;
+  if(!sessionId || !runGuard.isCurrent(generation)) return;
+  sendInFlight=true;
+  activeSendPromise=(async()=>{
+    try{
+      const decision=await api.sendBatch(frames);
+      if(decision && running && runGuard.isCurrent(generation) && sessionId===api.sessionId){
+        lastDecision=decision;
+        updateStatus(decision, lastResultTs ? 1000/Math.max(1, performance.now()-lastResultTs) : 0, true);
+      }
+    } catch(error){ if(runGuard.isCurrent(generation)) showServerUnavailable(error); }
+    finally{ sendInFlight=false; if(runGuard.isCurrent(generation)) batcher.maybeFlush(true); }
+  })();
+}
+function onFaceResults(results){
+  if(!WC.canCaptureFrame(running, resetting)) return;
+  const now=performance.now();
+  const fps=lastResultTs?1000/Math.max(1,now-lastResultTs):0;
+  lastResultTs=now;
+  if(video.ended && sourceMode==='file'){ void fullStop(true); return; }
+  if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){ drawNoFace(); enqueueFrame(null); if(lastDecision) updateStatus(lastDecision, fps); return; }
+  const lms=results.multiFaceLandmarks[0];
+  drawOverlay(lms, WC.normalizeState(lastDecision));
+  enqueueFrame(lms);
+  if(lastDecision) updateStatus(lastDecision, fps);
+}
+
+function applyInitialMode(){
+  const params = new URLSearchParams(window.location.search);
+  if(params.get('mode') === 'file'){
+    sourceMode='file'; setApiMode();
+    showNotice('Chế độ file cục bộ: chọn video để xử lý trong trình duyệt. File không được upload; chỉ landmark JSON chuẩn hóa được gửi.', true);
+    setTimeout(()=>document.getElementById('videoFile').click(), 250);
   }
 }
-async function loop(ts=performance.now()){ if(!running) return; requestAnimationFrame(loop); if(processing || video.readyState<2) return; const interval=1000/getTargetFps(); if(ts-lastResultTs < interval) return; processing=true; try{ await faceMesh.send({image:video}); } catch(e){ document.getElementById('topStatus').textContent='MediaPipe error: '+(e.message||e); } finally{ processing=false; } }
-function onFaceResults(results){ if(!running) return; const now=performance.now(); const fps=lastResultTs?1000/Math.max(1,now-lastResultTs):0; lastResultTs=now; frameCount++; if(video.ended && sourceMode==='video_file'){ fullStop(true); return; } if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){ drawNoFace(); updateStatus({state:'ALERT', evidence:0, metrics:{face_detected:false}, flags:{}, reasons:['NO_FACE_DETECTED'], fps, frame_count:frameCount}); return; }
-  const lms=results.multiFaceLandmarks[0]; const lEye=LEFT_EYE.map(i=>lms[i]), rEye=RIGHT_EYE.map(i=>lms[i]), mPts=MOUTH_4.map(i=>lms[i]); const earRaw=(calcEAR(lEye)+calcEAR(rEye))/2; const marRaw=calcMAR(mPts); const earS=dynEAR.update(earRaw); const marS=dynMAR.update(marRaw); const calib=document.getElementById('calib'); if(earS.phase!=='LOCKED'){ drawOverlay(lms,'ALERT'); calib.style.display='block'; const pct=Math.round((earS.phase==='WARMUP'?earS.progress*0.25:0.25+earS.progress*0.75)*100); document.getElementById('calibFill').style.width=pct+'%'; document.getElementById('calibText').textContent=pct+'%'; updateStatus({state:'ALERT', evidence:0, metrics:{ear:earRaw, ear_threshold:earS.tLow, mar:marS.mu, mar_threshold:marS.thr, face_detected:true}, flags:{}, reasons:['CALIBRATING_EAR'], fps, frame_count:frameCount}); return; } else { calib.style.display='none'; }
-  if(earS.closed) consecClosed++; else consecClosed=0; const blink=blinkTrk.update(earS.closed); const yawnFreq=yawnCnt.update(marS.open, Math.max(10, Math.round(getTargetFps()*0.5))); const hp=estimateHeadPose(lms); const pitchVel=(hp.pitch-lastPitch)*fps; lastPitch=hp.pitch; const eyeContext = earS.closed || consecClosed > getTargetFps()*0.25; if(hp.pitch>20 && Math.abs(hp.yaw)<30 && eyeContext) nodCounter++; else nodCounter=Math.max(0,nodCounter-2); const headNod=nodCounter>=Math.round(getTargetFps()*0.5); const fsmR=fsm.update({earClosed:earS.closed, consecClosed, mouthOpen:marS.open, headNod, yawnFreq, blinkAbnormal:blink.abnormal, fps:getTargetFps()}); const flags={ear_below_threshold:earS.closed, mar_above_threshold:marS.open, perclos_high:fsmR.p60>=0.20, perclos_short_high:fsmR.p5>=0.60, blink_high:blink.abnormal, yawn_high:yawnFreq>=3||marS.open, pitch_high:hp.pitch>20, closed_high:consecClosed>=Math.round(getTargetFps()*0.5), head_nod:headNod}; const reasons=[]; if(flags.ear_below_threshold) reasons.push('EAR_BELOW_THRESHOLD'); if(flags.closed_high) reasons.push('EYES_CLOSED_LONG'); if(flags.perclos_short_high) reasons.push('PERCLOS_5S_HIGH'); if(flags.perclos_high) reasons.push('PERCLOS_60S_HIGH'); if(flags.mar_above_threshold) reasons.push('MAR_ABOVE_THRESHOLD'); if(yawnFreq>=3) reasons.push('YAWN_FREQUENCY_HIGH'); if(headNod) reasons.push('HEAD_NOD_DETECTED'); if(blink.abnormal) reasons.push('BLINK_FREQUENCY_HIGH'); const status={state:fsmR.state, evidence:fsmR.evidence, metrics:{ear:earS.mu, ear_threshold:earS.tLow, mar:marS.mu, mar_threshold:marS.thr, mar_raw:marRaw, pitch:hp.pitch, pitch_velocity:pitchVel, perclos:fsmR.p60, perclos_short:fsmR.p5, blink_frequency:blink.freq, yawn_frequency:yawnFreq, eyes_closed_consecutive:consecClosed, head_nod_detected:headNod, face_detected:true}, flags, reasons, fps, frame_count:frameCount}; drawOverlay(lms,fsmR.state); updateStatus(status); }
 
 document.addEventListener('click', unlockAudio, {once:false});
 document.getElementById('startBtn').addEventListener('click', startCamera);
 document.getElementById('stopBtn').addEventListener('click', pauseSession);
 document.getElementById('continueBtn').addEventListener('click', continueSession);
-document.getElementById('resetBtn').addEventListener('click', ()=>{ resetAlgorithms(); document.getElementById('calib').style.display='none'; });
+document.getElementById('resetBtn').addEventListener('click', async()=>{
+  resetting=true;
+  try{
+    lifecycleGuard.invalidate(); starting=false; runGuard.invalidate(); batcher.reset(); await activeSendPromise.catch(()=>{});
+    resetAudioState(); frameSeq=0; frameCount=0; api.nextBatchSeq=1; sessionClock.reset(); if(running) sessionClock.start();
+    if(!api.sessionId){
+      lastDecision=null;
+      updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:[]}, 0);
+      showNotice('Chưa có phiên đang chạy để reset calibration.', false);
+      return;
+    }
+    const decision=await api.resetSession(); lastDecision=decision; updateStatus(decision, 0); showNotice('Đã reset calibration trên server.', false);
+  } catch(e){ showServerUnavailable(e); }
+  finally{ resetting=false; updateControlButtons(); }
+});
 document.getElementById('videoFile').addEventListener('change', e=>{ const file=e.target.files&&e.target.files[0]; if(file) startVideoFile(file); e.target.value=''; });
+document.getElementById('targetFps').addEventListener('change', ()=>{ setApiMode(); showNotice('FPS xử lý thay đổi ngay từ frame tiếp theo; metadata session cập nhật khi bắt đầu phiên mới.', false); });
+document.getElementById('soundEnable').addEventListener('change', e=>{ if(!e.target.checked) suspendAudio(); else reconcileContinuousAudio(); });
 document.getElementById('exportHistoryBtn').addEventListener('click', exportHistoryCsv);
 document.getElementById('clearHistoryBtn').addEventListener('click', clearEventHistory);
-window.addEventListener('beforeunload', ()=>fullStop(false));
+window.addEventListener('pagehide', ()=>{
+  lifecycleGuard.invalidate(); runGuard.invalidate(); api.abortActiveRequests(); resetAudioState(); resetPageLifecycleState();
+  stopStream(stream); stream=null; video.pause(); video.srcObject=null;
+  if(objectUrl){ URL.revokeObjectURL(objectUrl); objectUrl=null; video.removeAttribute('src'); }
+  void api.deleteSessionKeepalive();
+});
+window.addEventListener('pageshow', event=>{
+  if(!event.persisted) return;
+  resetPageLifecycleState();
+  updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:[]}, 0);
+  showNotice('Trang vừa được khôi phục từ bộ nhớ trình duyệt. Hãy bắt đầu phiên mới; calibration cũ đã được xóa.', true);
+  updateControlButtons();
+});
 renderEventHistory();
+updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:[]}, 0);
 updateControlButtons();
+applyInitialMode();
 </script>
 </body>
 </html>

@@ -46,6 +46,10 @@ class LegacyRuleEngine(DecisionEngine):
             score += 0.10
             reasons.append("RAPID_BLINK")
 
+        if signals.gaze_stable and not signals.ear_below_threshold:
+            score += 0.05
+            reasons.append("FIXED_GAZE")
+
         target_state = self._score_to_state(score)
         state_order = [
             DrowsinessState.ALERT,

@@ -13,11 +13,13 @@ from urllib.request import urlopen
 
 from local_app import (
     LocalLaunchError,
+    LocalOptions,
     bind_server,
     build_local_app,
     open_browser,
     parse_options,
     port_candidates,
+    run,
 )
 
 
@@ -157,6 +159,45 @@ class LocalLifecycleTests(unittest.TestCase):
 
         self.assertFalse(result)
         self.assertIn("Open this URL manually", output.getvalue())
+
+    def test_run_prints_shutdown_instruction_and_lan_warnings_without_lan_ip(self) -> None:
+        class FakeServer:
+            def serve_forever(self) -> None:
+                return None
+
+            def shutdown(self) -> None:
+                return None
+
+            def server_close(self) -> None:
+                return None
+
+        options = LocalOptions(
+            root=ROOT,
+            host="0.0.0.0",
+            port=5099,
+            explicit_port=True,
+            lan=True,
+            open_browser=False,
+        )
+        output = io.StringIO()
+
+        with mock.patch("local_app.build_local_app", return_value=(object(), object())), \
+                mock.patch("local_app.bind_server", return_value=(FakeServer(), 5099)), \
+                mock.patch("local_app.wait_for_health", return_value={
+                    "ready": True,
+                    "profile": "recommended",
+                    "model_hash": EXPECTED_MODEL_HASH,
+                }), \
+                mock.patch("local_app.best_effort_lan_ip", return_value=None), \
+                mock.patch("sys.stdout", output):
+            self.assertEqual(run(options), 0)
+
+        text = output.getvalue()
+        self.assertIn("Press Ctrl+C to stop.", text)
+        self.assertIn("LAN mode has no authentication", text)
+        self.assertIn("trusted private network only", text)
+        self.assertIn("camera access from another device may require HTTPS", text)
+        self.assertIn("LAN URL: unavailable", text)
 
     def test_subprocess_serves_contract_and_releases_port(self) -> None:
         port = free_port()

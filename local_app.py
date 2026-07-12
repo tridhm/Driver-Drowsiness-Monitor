@@ -117,7 +117,6 @@ def build_local_app(root: Path = ROOT) -> tuple[object, object]:
 
         runtime = WinnerRuntime(root, profile_name="recommended")
         app = create_app(runtime)
-        app.extensions["winner_runtime"] = runtime
         return app, runtime
     except Exception as exc:
         raise LocalLaunchError(f"Winner runtime is not ready: {exc}") from exc
@@ -190,14 +189,16 @@ def run(options: LocalOptions) -> int:
         print(f"Model: {health['model_hash'][:12]}...")
         print("Privacy: Video and images remain in the browser; only normalized landmark JSON is sent.")
         if options.lan:
+            print("LAN mode has no authentication; trusted private network only.")
+            print("camera access from another device may require HTTPS.")
             lan_ip = best_effort_lan_ip()
             if lan_ip is None:
                 print("LAN URL: unavailable; open the local URL on this computer.")
             else:
                 print(f"LAN URL: http://{lan_ip}:{selected_port}/")
-                print("LAN warning: only use this on a trusted private network.")
         if options.open_browser:
             open_browser(local_url)
+        print("Press Ctrl+C to stop.")
         try:
             while thread.is_alive():
                 thread.join(0.5)

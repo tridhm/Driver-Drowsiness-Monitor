@@ -19,7 +19,7 @@ The app opens `http://127.0.0.1:5000/`. If port 5000 is busy, the launcher tries
 On macOS or Linux, create and activate a Python 3.12 virtual environment the first time:
 
 ```bash
-python3 -m venv .venv
+python3.12 -m venv .venv
 . .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r requirements.txt

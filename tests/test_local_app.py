@@ -46,7 +46,7 @@ class LocalDocumentationTests(unittest.TestCase):
             "recommended",
             "Video stays in the browser",
             "Python 3.12",
-            "python3 -m venv .venv",
+            "python3.12 -m venv .venv",
             "python -m pip install -r requirements.txt",
             "Raw landmarks, images, and video are not persisted",
             "Flask keeps transient in-memory session state while active",

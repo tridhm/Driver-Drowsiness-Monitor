@@ -38,6 +38,12 @@ class LocalOptionsTests(unittest.TestCase):
         with self.assertRaises(SystemExit):
             parse_options(["--host", "0.0.0.0"])
 
+    def test_loopback_host_is_normalized(self) -> None:
+        options = parse_options(["--host", " LOCALHOST "])
+
+        self.assertEqual(options.host, "localhost")
+        self.assertFalse(options.lan)
+
     def test_explicit_port_is_recorded_and_validated(self) -> None:
         options = parse_options(["--port=5099"])
 

@@ -53,15 +53,16 @@ def parse_options(argv: Sequence[str] | None = None) -> LocalOptions:
     args = parser.parse_args(args_list)
     explicit_port = bool(args_list and any(item == "--port" or item.startswith("--port=") for item in args_list))
     explicit_host = bool(args_list and any(item == "--host" or item.startswith("--host=") for item in args_list))
+    requested_host = args.host.strip().lower()
 
     if args.lan:
-        if explicit_host and args.host not in LOOPBACK_HOSTS:
+        if explicit_host and requested_host not in LOOPBACK_HOSTS:
             parser.error("--lan cannot be combined with a non-loopback --host")
         host = "0.0.0.0"
     else:
-        if args.host not in LOOPBACK_HOSTS:
+        if requested_host not in LOOPBACK_HOSTS:
             parser.error("non-loopback hosts require --lan")
-        host = args.host
+        host = requested_host
 
     return LocalOptions(
         root=ROOT,

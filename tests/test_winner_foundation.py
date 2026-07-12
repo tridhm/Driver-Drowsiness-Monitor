@@ -115,7 +115,7 @@ class WinnerFoundationTests(unittest.TestCase):
             })
 
         canonical = aggregate_frame_rows(rows, window_seconds=60.0, stride_seconds=60.0)[-1]
-        fast = aggregate_runtime_window(rows, window_seconds=60.0)
+        fast = aggregate_runtime_window(rows, window_seconds=60.0, rows_are_ordered=True)
         self.assertIsNotNone(fast)
         for key in (
             "frame_count", "valid_face_ratio", "mean_ear", "min_ear", "ear_std", "ear_p10",
@@ -124,6 +124,25 @@ class WinnerFoundationTests(unittest.TestCase):
         ):
             self.assertAlmostEqual(float(fast[key]), float(canonical[key]), places=12, msg=key)
         self.assertEqual(fast["fsm_state_mode"], canonical["fsm_state_mode"])
+
+    def test_fast_isotonic_predictor_matches_packaged_sklearn_model(self) -> None:
+        import numpy as np
+
+        from runtime.model_bundle import FastIsotonicBinaryPredictor, WinnerModelBundle
+
+        bundle = WinnerModelBundle.load(
+            ROOT / "models" / "camera_hybrid_winner.joblib",
+            ROOT / "models" / "winner_manifest.json",
+        )
+        predictor = FastIsotonicBinaryPredictor.from_model(bundle.model)
+        base = np.array([3600.0, 0.75, 1200.0, 2.4, 0.55, 0.25, 0.22, 0.28, 0.999, 0.2])
+        scale = np.array([120.0, 1.2, 1600.0, 4.5, 0.2, 0.25, 0.04, 0.24, 0.002, 0.5])
+        rows = np.vstack([base + ((index % 11) - 5) * scale / 5.0 for index in range(101)])
+
+        expected = bundle.model.predict_proba(rows)
+        actual = predictor.predict_proba(rows)
+
+        self.assertLessEqual(float(np.max(np.abs(expected - actual))), 1e-12)
 
     def test_landmark_adapter_computes_ear_mar_and_pose(self) -> None:
         from runtime.landmark_adapter import LandmarkPacketAdapter

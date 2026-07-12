@@ -97,8 +97,12 @@ class WinnerSessionTests(unittest.TestCase):
     def test_runtime_loads_recommended_profile_and_validated_model(self) -> None:
         self.assertEqual(self.runtime.profile_name, "recommended")
         self.assertEqual(self.runtime.config.decision_engine, "camera_hybrid")
+        from runtime.model_bundle import FastIsotonicBinaryPredictor
+
         self.assertEqual(self.runtime.bundle.sha256, "8958d2d4dd0a0757b5a922adb11df263144e253873909ac8816cd26c248bc89c")
         self.assertEqual(self.runtime.config.camera_model.probability_threshold, 0.55)
+        session = self.runtime.create_session(source_mode="camera", target_fps=20)
+        self.assertIsInstance(session.engine.predictor, FastIsotonicBinaryPredictor)
 
     def test_session_batch_is_idempotent_and_out_of_order_is_rejected(self) -> None:
         from runtime.web_runtime import ProtocolError

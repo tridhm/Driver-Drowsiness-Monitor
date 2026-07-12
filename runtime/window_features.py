@@ -254,12 +254,16 @@ def aggregate_frame_rows(
 def aggregate_runtime_window(
     frame_rows: list[dict[str, Any]],
     window_seconds: float,
+    *,
+    rows_are_ordered: bool = False,
 ) -> dict[str, Any] | None:
     """Aggregate only the features consumed by the production camera hybrid."""
     if window_seconds <= 0:
         raise ValueError("window_seconds must be > 0")
     if not frame_rows:
         return None
+    if rows_are_ordered:
+        return _aggregate_ordered_runtime_window(frame_rows, window_seconds)
 
     rows = sorted(frame_rows, key=lambda row: as_float(row, "timestamp_sec"))
     window_end = as_float(rows[0], "timestamp_sec") + window_seconds
@@ -300,6 +304,62 @@ def aggregate_runtime_window(
         "max_mar": max(mar_values) if mar_values else 0.0,
         "perclos_60s": as_float(members[-1], "perclos_60s"),
         "perclos_5s": as_float(members[-1], "perclos_5s"),
+        "max_eye_closed_duration_sec": longest_closed * sample_interval,
+        "yawn_count": max(0, max(yawn_values) - min(yawn_values)) if yawn_values else 0,
+        "head_drop_count": sum(1 for value in head_drop_flags if value),
+        "mean_fsm_evidence": _mean(evidence_values),
+        "max_fsm_evidence": max(evidence_values) if evidence_values else 0.0,
+        "fsm_state_mode": _mode(states),
+    }
+
+
+def _aggregate_ordered_runtime_window(
+    rows: list[dict[str, Any]],
+    window_seconds: float,
+) -> dict[str, Any] | None:
+    """Specialized exact path for the engine's already ordered numeric rows."""
+    window_end = float(rows[0].get("timestamp_sec", 0.0) or 0.0) + window_seconds
+    members: list[dict[str, Any]] = []
+    for row in rows:
+        if float(row.get("timestamp_sec", 0.0) or 0.0) >= window_end:
+            break
+        members.append(row)
+    if len(members) < 2:
+        return None
+
+    timestamps = [float(row.get("timestamp_sec", 0.0) or 0.0) for row in members]
+    sample_interval = _estimate_sample_interval(timestamps)
+    ear_values = [float(row.get("ear", 0.0) or 0.0) for row in members]
+    mar_values = [float(row.get("mar", 0.0) or 0.0) for row in members]
+    evidence_values = [float(row.get("fsm_evidence", 0.0) or 0.0) for row in members]
+    states = [str(row.get("fsm_state", "")) for row in members]
+    face_flags = [bool(row.get("face_detected", False)) for row in members]
+    eye_closed_flags = [bool(row.get("eye_closed", False)) for row in members]
+    head_drop_flags = [bool(row.get("head_nod_detected", False)) for row in members]
+    yawn_values = [int(round(float(row.get("yawn_frequency", 0) or 0))) for row in members]
+
+    longest_closed = 0
+    current_closed = 0
+    for closed in eye_closed_flags:
+        if closed:
+            current_closed += 1
+            longest_closed = max(longest_closed, current_closed)
+        else:
+            current_closed = 0
+    if sample_interval <= 0:
+        sample_interval = 1.0
+
+    return {
+        "frame_count": len(members),
+        "valid_face_ratio": sum(1 for value in face_flags if value) / len(members),
+        "mean_ear": _mean(ear_values),
+        "min_ear": min(ear_values) if ear_values else 0.0,
+        "ear_std": _std(ear_values),
+        "ear_p10": _quantile(ear_values, 0.10),
+        "mean_mar": _mean(mar_values),
+        "max_mar": max(mar_values) if mar_values else 0.0,
+        "perclos_60s": float(members[-1].get("perclos_60s", 0.0) or 0.0),
+        "perclos_5s": float(members[-1].get("perclos_5s", 0.0) or 0.0),
         "max_eye_closed_duration_sec": longest_closed * sample_interval,
         "yawn_count": max(0, max(yawn_values) - min(yawn_values)) if yawn_values else 0,
         "head_drop_count": sum(1 for value in head_drop_flags if value),

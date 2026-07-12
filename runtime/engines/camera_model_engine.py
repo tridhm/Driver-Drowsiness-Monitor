@@ -8,7 +8,7 @@ from fsm import ALERT_CONFIGS, DrowsinessFSM, DrowsinessSignals, DrowsinessState
 from runtime.config import RuntimeConfig
 from runtime.contracts import DecisionResult, EngineContext
 from runtime.engines.base import DecisionEngine
-from runtime.model_bundle import load_model_artifact
+from runtime.model_bundle import FastIsotonicBinaryPredictor, load_model_artifact
 from runtime.window_features import aggregate_runtime_window, numeric_feature_value
 
 
@@ -75,6 +75,10 @@ class CameraModelDecisionEngine(DecisionEngine):
             raise ValueError("Camera model artifact must contain 'model' and 'feature_columns'.")
 
         self.model = artifact["model"]
+        try:
+            self.predictor = FastIsotonicBinaryPredictor.from_model(self.model)
+        except ValueError:
+            self.predictor = self.model
         self.feature_columns = [str(feature) for feature in artifact["feature_columns"]]
         artifact_threshold = float(artifact.get("probability_threshold", 0.5))
         config_threshold = config.camera_model.probability_threshold
@@ -194,7 +198,9 @@ class CameraModelDecisionEngine(DecisionEngine):
         return (timestamp_sec - oldest) >= self.min_window_seconds
 
     def _build_window_row(self) -> dict[str, Any] | None:
-        aggregated = aggregate_runtime_window(list(self.rows), window_seconds=self.window_seconds)
+        aggregated = aggregate_runtime_window(
+            list(self.rows), window_seconds=self.window_seconds, rows_are_ordered=True
+        )
         if aggregated is None:
             return None
         window = dict(aggregated)
@@ -218,7 +224,7 @@ class CameraModelDecisionEngine(DecisionEngine):
 
     def _sleepy_probability(self, window: dict[str, Any]) -> float:
         values = [[numeric_feature_value(window, feature) for feature in self.feature_columns]]
-        probabilities = self.model.predict_proba(values)[0]
+        probabilities = self.predictor.predict_proba(values)[0]
         class_index = self._positive_class_index()
         return float(probabilities[class_index])
 

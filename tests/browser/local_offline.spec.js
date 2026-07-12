@@ -54,6 +54,13 @@ test.beforeEach(async ({ page }) => {
   });
 });
 
+test.afterEach(async ({ page }) => {
+  if (page.isClosed()) return;
+  await page.evaluate(async () => {
+    if (typeof fullStop === 'function') await fullStop(false);
+  }).catch(() => {});
+});
+
 test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offline', async ({ page }) => {
   await page.goto('/');
   await expect(page.locator('#runtimeLocation')).toHaveText('LOCAL');
@@ -87,6 +94,74 @@ test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offlin
 
   expect(page.externalRequests).toEqual([]);
   expect(page.consoleErrors).toEqual([]);
+});
+
+test('slow MediaPipe does not add target interval after inference completes', async ({ page }) => {
+  await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
+    await route.fulfill({
+      contentType: 'application/javascript',
+      body: `
+        window.__faceMeshSendCount = 0;
+        window.FaceMesh = class {
+          constructor() { this.callback = () => {}; }
+          setOptions() {}
+          onResults(callback) { this.callback = callback; }
+          async initialize() {}
+          async send() {
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            window.__faceMeshSendCount += 1;
+            this.callback({ multiFaceLandmarks: [] });
+          }
+        };
+      `,
+    });
+  });
+
+  await page.goto('/');
+  await page.locator('#startBtn').click();
+  await expect.poll(() => page.evaluate(() => window.__faceMeshSendCount), { timeout: 15_000 }).toBeGreaterThan(0);
+
+  const initialCount = await page.evaluate(() => window.__faceMeshSendCount);
+  await page.waitForTimeout(1_600);
+  const completed = await page.evaluate((before) => window.__faceMeshSendCount - before, initialCount);
+
+  expect(completed).toBeGreaterThanOrEqual(16);
+});
+
+test('server responses keep the displayed FPS bounded by measured capture cadence', async ({ page }) => {
+  await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
+    await route.fulfill({
+      contentType: 'application/javascript',
+      body: `
+        window.__faceMeshSendCount = 0;
+        window.FaceMesh = class {
+          constructor() { this.callback = () => {}; }
+          setOptions() {}
+          onResults(callback) { this.callback = callback; }
+          async initialize() {}
+          async send() {
+            await new Promise((resolve) => setTimeout(resolve, 80));
+            window.__faceMeshSendCount += 1;
+            this.callback({ multiFaceLandmarks: [] });
+          }
+        };
+      `,
+    });
+  });
+
+  await page.goto('/');
+  await page.locator('#startBtn').click();
+  await expect.poll(() => page.evaluate(() => window.__faceMeshSendCount), { timeout: 15_000 }).toBeGreaterThan(2);
+
+  const samples = [];
+  for (let index = 0; index < 120; index += 1) {
+    const text = await page.locator('#fps').textContent();
+    const match = /FPS xử lý:\s*([0-9.]+)/.exec(text || '');
+    if (match) samples.push(Number(match[1]));
+    await page.waitForTimeout(10);
+  }
+
+  expect(Math.max(...samples)).toBeLessThanOrEqual(25);
 });
 
 test('stubbed camera sends deterministic detected landmark payload without media bytes', async ({ page }) => {

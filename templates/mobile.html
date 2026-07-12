@@ -181,6 +181,8 @@ let objectUrl = null;
 let frameSeq = 0;
 let frameCount = 0;
 let lastResultTs = 0;
+let lastInferenceStartTs = 0;
+let lastMeasuredFps = 0;
 let audioContinuous = false;
 let audioUnlocked = false;
 let audioGeneration = 0;
@@ -215,12 +217,12 @@ function cls(state){ return VALID_STATES.includes(state) ? state : 'STOPPED'; }
 function stateLabel(s){ return s === 'UNAVAILABLE' ? 'SERVER UNAVAILABLE' : (s || 'STOPPED'); }
 function setMetric(boxId, valId, text, warn=false){ document.getElementById(valId).textContent=text; document.getElementById(boxId).classList.toggle('warn', !!warn); }
 function showNotice(message, keepVisible=false){ const hint=document.getElementById('hint'); hint.style.display='block'; hint.textContent=message; if(!keepVisible && running) setTimeout(()=>{ if(running) hint.style.display='none'; }, 3500); }
-function clearBatchState(){ batcher.reset(); frameSeq = 0; frameCount = 0; api.nextBatchSeq = 1; sessionClock.reset(); }
+function clearBatchState(){ batcher.reset(); frameSeq = 0; frameCount = 0; lastMeasuredFps = 0; api.nextBatchSeq = 1; sessionClock.reset(); }
 function resetPageLifecycleState(){
   const state=WC.pageLifecycleResetState();
   running=state.running; paused=state.paused; processing=state.processing;
   resetting=state.resetting; starting=state.starting; sendInFlight=state.sendInFlight;
-  lastDecision=null; lastResultTs=0;
+  lastDecision=null; lastResultTs=0; lastMeasuredFps=0;
   batcher.reset(); sessionClock.reset();
 }
 function setApiMode(){ api.setMode(sourceMode === 'file' ? 'file' : 'camera', getTargetFps()); }
@@ -511,7 +513,7 @@ async function startVideoFile(file){
     if(lifecycleGuard.isCurrent(generation)){ showNotice('Không mở được video/server: '+(err.message||err)+'. Nên dùng file MP4/H.264 để trình duyệt đọc ổn định.', true); updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:['VIDEO_FILE_OR_SERVER_ERROR']}, 0); }
   } finally{ finishLifecycle(generation); }
 }
-async function loop(ts=performance.now()){ if(!running) return; requestAnimationFrame(loop); if(processing || video.readyState<2) return; if(!batcher.canAccept()) return; const interval=1000/getTargetFps(); if(ts-lastResultTs < interval) return; processing=true; try{ await faceMesh.send({image:video}); } catch(e){ document.getElementById('topStatus').textContent='MediaPipe error: '+(e.message||e); } finally{ processing=false; } }
+async function loop(ts=performance.now()){ if(!running) return; requestAnimationFrame(loop); if(processing || video.readyState<2) return; if(!batcher.canAccept()) return; const interval=1000/getTargetFps(); if(ts-lastInferenceStartTs < interval) return; lastInferenceStartTs=ts; processing=true; try{ await faceMesh.send({image:video}); } catch(e){ document.getElementById('topStatus').textContent='MediaPipe error: '+(e.message||e); } finally{ processing=false; } }
 function enqueueFrame(faceLandmarks){
   const nextSeq=frameSeq+1;
   const timestamp=sessionClock.timestampMs(sourceMode, video);
@@ -530,7 +532,7 @@ function sendFrames(frames){
       const decision=await api.sendBatch(frames);
       if(decision && running && runGuard.isCurrent(generation) && sessionId===api.sessionId){
         lastDecision=decision;
-        updateStatus(decision, lastResultTs ? 1000/Math.max(1, performance.now()-lastResultTs) : 0, true);
+        updateStatus(decision, lastMeasuredFps, true);
       }
     } catch(error){ if(runGuard.isCurrent(generation)) showServerUnavailable(error); }
     finally{ sendInFlight=false; if(runGuard.isCurrent(generation)) batcher.maybeFlush(true); }
@@ -540,6 +542,7 @@ function onFaceResults(results){
   if(!WC.canCaptureFrame(running, resetting)) return;
   const now=performance.now();
   const fps=lastResultTs?1000/Math.max(1,now-lastResultTs):0;
+  lastMeasuredFps=fps;
   lastResultTs=now;
   if(video.ended && sourceMode==='file'){ void fullStop(true); return; }
   if(!results.multiFaceLandmarks || !results.multiFaceLandmarks.length){ drawNoFace(); enqueueFrame(null); if(lastDecision) updateStatus(lastDecision, fps); return; }
@@ -566,7 +569,7 @@ document.getElementById('resetBtn').addEventListener('click', async()=>{
   resetting=true;
   try{
     lifecycleGuard.invalidate(); starting=false; runGuard.invalidate(); batcher.reset(); await activeSendPromise.catch(()=>{});
-    resetAudioState(); frameSeq=0; frameCount=0; api.nextBatchSeq=1; sessionClock.reset(); if(running) sessionClock.start();
+    resetAudioState(); frameSeq=0; frameCount=0; lastMeasuredFps=0; api.nextBatchSeq=1; sessionClock.reset(); if(running) sessionClock.start();
     if(!api.sessionId){
       lastDecision=null;
       updateStatus({state:'STOPPED', probability:0, metrics:{}, reasons:[]}, 0);

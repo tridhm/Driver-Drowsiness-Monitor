@@ -3,7 +3,7 @@ setlocal
 cd /d "%~dp0"
 
 set "VENV_PY=%~dp0.venv\Scripts\python.exe"
-if exist "%VENV_PY%" goto run
+if exist "%VENV_PY%" goto verify_venv
 
 echo Preparing local Python environment...
 set "PYTHON_CMD=py -3.12"
@@ -27,6 +27,11 @@ if errorlevel 1 goto setup_failed
 if errorlevel 1 goto setup_failed
 "%VENV_PY%" -m pip install -r requirements.txt
 if errorlevel 1 goto setup_failed
+goto run
+
+:verify_venv
+"%VENV_PY%" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)"
+if errorlevel 1 goto wrong_python
 goto run
 
 :run

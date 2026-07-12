@@ -3,6 +3,7 @@ from __future__ import annotations
 import builtins
 import io
 import json
+import os
 import socket
 import subprocess
 import sys
@@ -47,7 +48,84 @@ class WindowsWrapperTests(unittest.TestCase):
         self.assertIn("-m venv .venv", script)
         self.assertIn("-m pip install -r requirements.txt", script)
         self.assertIn('local_app.py" %*', script)
-        self.assertNotIn(r"D:\\", script)
+        self.assertNotIn("D:\\", script)
+
+    def test_existing_wrapper_venv_is_version_checked_before_run(self) -> None:
+        script = (ROOT / "run_local.cmd").read_text(encoding="utf-8")
+
+        self.assertIn('if exist "%VENV_PY%" goto verify_venv', script)
+        self.assertIn(":verify_venv", script)
+        self.assertIn(
+            '"%VENV_PY%" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)"',
+            script,
+        )
+        self.assertIn("if errorlevel 1 goto wrong_python", script)
+        self.assertIn("goto run", script)
+
+    @unittest.skipUnless(os.name == "nt", "Windows wrapper smoke only runs on Windows")
+    def test_wrapper_subprocess_serves_contract_and_releases_port(self) -> None:
+        port = free_port()
+        process = subprocess.Popen(
+            [
+                "cmd",
+                "/c",
+                "run_local.cmd",
+                "--no-browser",
+                "--port",
+                str(port),
+            ],
+            cwd=ROOT,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            health = None
+            deadline = time.monotonic() + 45.0
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate(timeout=1.0)
+                    self.fail(f"run_local.cmd exited early with {process.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}/api/healthz", timeout=2.0) as response:
+                        health = json.load(response)
+                    if health.get("ready") is True:
+                        break
+                except (OSError, ValueError, json.JSONDecodeError):
+                    time.sleep(0.1)
+
+            self.assertIsNotNone(health)
+            self.assertTrue(health["ready"])
+            self.assertEqual(health["profile"], "recommended")
+            self.assertEqual(health["model_hash"], EXPECTED_MODEL_HASH)
+        finally:
+            if process.poll() is None:
+                subprocess.run(
+                    ["taskkill", "/PID", str(process.pid), "/T", "/F"],
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    check=False,
+                )
+                try:
+                    process.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10.0)
+            try:
+                process.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=1.0)
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                        sock.bind(("127.0.0.1", port))
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
 
 
 class LocalOptionsTests(unittest.TestCase):

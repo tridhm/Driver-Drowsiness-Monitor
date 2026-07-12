@@ -18,7 +18,9 @@ function expectNoMediaBody(payload) {
 test.beforeEach(async ({ page }) => {
   page.consoleErrors = [];
   page.externalRequests = [];
+  page.faceMeshAssetRequests = [];
   page.framePayloads = [];
+  page.requestBodies = [];
 
   page.on('console', (message) => {
     if (message.type() === 'error') page.consoleErrors.push(message.text());
@@ -31,6 +33,14 @@ test.beforeEach(async ({ page }) => {
       page.externalRequests.push(url);
       await route.abort();
       return;
+    }
+    const parsed = new URL(url);
+    if (parsed.pathname.startsWith('/static/vendor/face_mesh/')) {
+      page.faceMeshAssetRequests.push(url);
+    }
+    const postData = request.postData();
+    if (postData) {
+      page.requestBodies.push({ url, body: postData });
     }
     if (request.method() === 'POST' && /\/api\/v1\/sessions\/[^/]+\/frames$/.test(new URL(url).pathname)) {
       page.framePayloads.push(request.postDataJSON());
@@ -46,6 +56,11 @@ test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offlin
   await page.locator('#startBtn').click();
   await expect(page.locator('#topStatus')).toContainText('MediaPipe ready', { timeout: 45_000 });
   await expect.poll(() => page.framePayloads.length, { timeout: 30_000 }).toBeGreaterThan(0);
+
+  expect(page.faceMeshAssetRequests).toEqual(expect.arrayContaining([
+    expect.stringMatching(/\/static\/vendor\/face_mesh\/face_mesh\.js$/),
+  ]));
+  expect(page.faceMeshAssetRequests.some((url) => /\.(wasm|binarypb|data)$/.test(url))).toBe(true);
 
   for (const payload of page.framePayloads) {
     expect(Object.keys(payload).sort()).toEqual(['batch_seq', 'frames']);
@@ -70,7 +85,7 @@ test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offlin
 });
 
 test('file mode creates a local object URL and never uploads media bodies', async ({ page }) => {
-  const requestBodies = [];
+  const fixtureMarker = 'local-browser-only-fixture-7f3a';
 
   await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
     await route.fulfill({
@@ -112,26 +127,23 @@ test('file mode creates a local object URL and never uploads media bodies', asyn
     HTMLMediaElement.prototype.pause = function pause() {};
   });
 
-  page.on('request', (request) => {
-    const body = request.postData();
-    if (body) requestBodies.push({ url: request.url(), body });
-  });
-
   await page.goto('/mobile?mode=file');
   await expect(page.locator('#runtimeLocation')).toHaveText('LOCAL');
   await page.locator('#videoFile').setInputFiles({
     name: 'synthetic.mp4',
     mimeType: 'video/mp4',
-    buffer: Buffer.from('synthetic mp4 fixture'),
+    buffer: Buffer.from(fixtureMarker),
   });
 
   await expect.poll(() => page.evaluate(() => window.__objectUrls.length), { timeout: 15_000 }).toBeGreaterThan(0);
-  for (const requestBody of requestBodies) {
+  for (const requestBody of page.requestBodies) {
     expect(requestBody.url).not.toContain('/api/upload');
     expect(requestBody.body.toLowerCase()).not.toContain('video');
     expect(requestBody.body.toLowerCase()).not.toContain('base64');
+    expect(requestBody.body).not.toContain(fixtureMarker);
   }
   expect(page.externalRequests).toEqual([]);
+  expect(page.consoleErrors).toEqual([]);
 });
 
 for (const viewport of [
@@ -167,5 +179,6 @@ for (const viewport of [
     expect(layout.badge.left).toBeGreaterThanOrEqual(0);
     expect(layout.badge.right).toBeLessThanOrEqual(layout.innerWidth);
     expect(page.externalRequests).toEqual([]);
+    expect(page.consoleErrors).toEqual([]);
   });
 }

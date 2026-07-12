@@ -60,6 +60,7 @@ class WinnerWebApiTests(unittest.TestCase):
         self.assertEqual(info["landmark_count"], 20)
         self.assertFalse(info["video_upload_enabled"])
         self.assertEqual(info["session_idle_timeout_seconds"], self.app.extensions["winner_session_store"].idle_timeout_seconds)
+        self.assertEqual(info["capture_stall_tolerance_ms"], 3000)
 
     def test_create_process_reset_and_delete_session(self) -> None:
         session_id = self._create_session()
@@ -298,6 +299,44 @@ class WinnerWebApiTests(unittest.TestCase):
         body = second.get_json()
         self.assertEqual(body["input_frames"], 8)
         self.assertGreater(body["virtual_frames"], body["input_frames"])
+
+    def test_http_session_survives_transient_1500ms_capture_stall(self) -> None:
+        session_id = self._create_session(target_fps=20)
+        first = self.client.post(
+            f"/api/v1/sessions/{session_id}/frames",
+            json={
+                "batch_seq": 1,
+                "frames": [{
+                    "seq": 1,
+                    "timestamp_ms": 0.0,
+                    "width": 1000,
+                    "height": 800,
+                    "face_detected": False,
+                    "landmarks": {},
+                }],
+            },
+        )
+        self.assertEqual(first.status_code, 200)
+
+        stalled = self.client.post(
+            f"/api/v1/sessions/{session_id}/frames",
+            json={
+                "batch_seq": 2,
+                "frames": [{
+                    "seq": 2,
+                    "timestamp_ms": 1500.0,
+                    "width": 1000,
+                    "height": 800,
+                    "face_detected": False,
+                    "landmarks": {},
+                }],
+            },
+        )
+
+        self.assertEqual(stalled.status_code, 200)
+        self.assertEqual(stalled.get_json()["session_id"], session_id)
+        self.assertGreater(stalled.get_json()["virtual_frames"], 32)
+
     def test_session_store_caps_active_sessions(self) -> None:
         from web_server import create_app
 

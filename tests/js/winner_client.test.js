@@ -205,6 +205,30 @@ test('WinnerApiClient keeps the deadline active while reading the response body'
   await assert.rejects(() => client.sendBatch([{ seq: 1, timestamp_ms: 10 }]), /timeout/i);
 });
 
+test('WinnerApiClient preserves the session across a transient 1.5 second capture stall', async () => {
+  const calls = [];
+  const resets = [];
+  const client = new WinnerApiClient({
+    fetchImpl: async (url, options) => {
+      calls.push({ url, options });
+      if (url.endsWith('/api/v1/sessions')) {
+        return { ok: true, status: 201, json: async () => ({ session_id: 'session-2' }) };
+      }
+      return { ok: true, status: 200, json: async () => ({ state: 'ALERT' }) };
+    },
+    onSessionReset: (event) => resets.push(event.reason),
+  });
+  client.sessionId = 'session-1';
+
+  await client.sendBatch([{ seq: 1, timestamp_ms: 350 }]);
+  const decision = await client.sendBatch([{ seq: 2, timestamp_ms: 1850 }]);
+
+  assert.equal(decision.state, 'ALERT');
+  assert.equal(client.sessionId, 'session-1');
+  assert.equal(client.nextBatchSeq, 3);
+  assert.deepEqual(resets, []);
+  assert.equal(calls.filter((call) => call.url.includes('/frames')).length, 2);
+});
 test('WinnerApiClient resets the server session instead of sending a timestamp discontinuity', async () => {
   const calls = [];
   const resets = [];
@@ -221,7 +245,7 @@ test('WinnerApiClient resets the server session instead of sending a timestamp d
   client.sessionId = 'session-1';
 
   await client.sendBatch([{ seq: 1, timestamp_ms: 350 }]);
-  const discontinuous = await client.sendBatch([{ seq: 2, timestamp_ms: 1500 }]);
+  const discontinuous = await client.sendBatch([{ seq: 2, timestamp_ms: 3500 }]);
 
   assert.equal(discontinuous, null);
   assert.equal(client.sessionId, 'session-2');
@@ -300,7 +324,7 @@ test('WinnerApiClient does not replace a gap session when DELETE is unconfirmed'
 
   await client.sendBatch([{ seq: 1, timestamp_ms: 350 }]);
   await assert.rejects(
-    () => client.sendBatch([{ seq: 2, timestamp_ms: 1500 }]),
+    () => client.sendBatch([{ seq: 2, timestamp_ms: 3500 }]),
     /delete unavailable/i,
   );
 
@@ -325,7 +349,7 @@ test('WinnerApiClient treats DELETE 404 as confirmed absence during gap rollover
   client.sessionId = 'session-1';
 
   await client.sendBatch([{ seq: 1, timestamp_ms: 350 }]);
-  const decision = await client.sendBatch([{ seq: 2, timestamp_ms: 1500 }]);
+  const decision = await client.sendBatch([{ seq: 2, timestamp_ms: 3500 }]);
 
   assert.equal(decision, null);
   assert.equal(client.sessionId, 'session-2');

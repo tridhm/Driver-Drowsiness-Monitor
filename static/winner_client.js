@@ -208,7 +208,7 @@
       this.maxRetries = opts.maxRetries === undefined ? 1 : opts.maxRetries;
       this.retryDelayMs = opts.retryDelayMs === undefined ? 180 : opts.retryDelayMs;
       this.requestTimeoutMs = opts.requestTimeoutMs === undefined ? 2500 : opts.requestTimeoutMs;
-      this.maxFrameGapMs = opts.maxFrameGapMs === undefined ? 1000 : Number(opts.maxFrameGapMs);
+      this.maxFrameGapMs = opts.maxFrameGapMs === undefined ? 3000 : Number(opts.maxFrameGapMs);
       this.sleep = opts.sleep || ((ms) => new Promise((resolve) => setTimeout(resolve, ms)));
       this.onSessionReset = opts.onSessionReset || (() => {});
       this.sessionId = null;

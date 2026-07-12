@@ -13,7 +13,13 @@ from werkzeug.exceptions import RequestEntityTooLarge
 from werkzeug.middleware.proxy_fix import ProxyFix
 
 from runtime.landmark_adapter import REQUIRED_LANDMARKS
-from runtime.web_runtime import ProtocolError, SessionLimits, WinnerRuntime, WinnerSession
+from runtime.web_runtime import (
+    CAPTURE_STALL_TOLERANCE_MS,
+    ProtocolError,
+    SessionLimits,
+    WinnerRuntime,
+    WinnerSession,
+)
 
 
 ROOT = Path(__file__).resolve().parent
@@ -207,6 +213,7 @@ def create_app(runtime: WinnerRuntime | None = None, startup_error: str | None =
             video_upload_enabled=False,
             privacy="Video and images remain in the browser; only normalized landmark JSON is sent.",
             session_idle_timeout_seconds=require_store().idle_timeout_seconds,
+            capture_stall_tolerance_ms=int(CAPTURE_STALL_TOLERANCE_MS),
             max_active_sessions=limits.max_active_sessions,
             max_active_sessions_per_client=limits.max_active_sessions_per_client,
         )

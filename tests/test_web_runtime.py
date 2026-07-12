@@ -56,6 +56,16 @@ class TimestampNormalizerTests(unittest.TestCase):
         self.assertTrue(all(not packet["face_detected"] for packet in missing))
         self.assertEqual(rows[-1][1]["marker"], "b")
 
+    def test_default_normalizer_preserves_session_across_1500ms_stall(self) -> None:
+        from runtime.web_runtime import TimestampNormalizer
+
+        normalizer = TimestampNormalizer()
+        normalizer.push({"timestamp_ms": 0.0, "face_detected": True, "marker": "a"})
+        rows = normalizer.push({"timestamp_ms": 1500.0, "face_detected": True, "marker": "b"})
+
+        self.assertGreater(len(rows), 32)
+        self.assertTrue(any(not packet["face_detected"] for timestamp, packet in rows if timestamp > 250.0))
+        self.assertEqual(normalizer.last_input_ms, 1500.0)
 
     def test_excessive_timestamp_gap_is_rejected_before_virtual_expansion(self) -> None:
         from runtime.web_runtime import ProtocolError, TimestampNormalizer

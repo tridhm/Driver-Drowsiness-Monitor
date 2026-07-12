@@ -26,6 +26,8 @@ LOGGER = logging.getLogger(__name__)
 REFERENCE_FPS = 30.0
 REFERENCE_STEP_MS = 1000.0 / REFERENCE_FPS
 ALLOWED_TARGET_FPS = {10, 15, 20, 30}
+CAPTURE_STALL_TOLERANCE_MS = 3000.0
+MAX_GAP_VIRTUAL_FRAMES = 96
 
 
 class ProtocolError(ValueError):
@@ -39,8 +41,8 @@ class TimestampNormalizer:
         self,
         reference_fps: float = REFERENCE_FPS,
         max_hold_ms: float = 250.0,
-        max_gap_ms: float = 1000.0,
-        max_generated_frames: int = 32,
+        max_gap_ms: float = CAPTURE_STALL_TOLERANCE_MS,
+        max_generated_frames: int = MAX_GAP_VIRTUAL_FRAMES,
     ) -> None:
         self.step_ms = 1000.0 / float(reference_fps)
         self.max_hold_ms = float(max_hold_ms)
@@ -146,7 +148,7 @@ class SessionLimits:
     max_session_creates_per_minute: int = 60
     max_active_sessions_per_client: int = 4
     max_session_creates_per_client_per_minute: int = 12
-    max_virtual_frames_per_second: int = 90
+    max_virtual_frames_per_second: int = 96
 
 
 class SlidingRateLimiter:

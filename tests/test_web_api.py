@@ -362,6 +362,8 @@ class WinnerWebApiTests(unittest.TestCase):
         html = self.client.get("/").get_data(as_text=True)
         self.assertIn("Sleepy probability", html)
         self.assertIn("PERCLOS 6s", html)
+        self.assertIn('id="runtimeLocation"', html)
+        self.assertIn("runtimeLocationLabel(window.location.hostname)", html)
         self.assertIn("dynamic_total_progress", html)
         self.assertIn("FPS xử lý thay đổi ngay từ frame tiếp theo", html)
         self.assertNotIn("sau reset", html)

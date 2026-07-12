@@ -18,6 +18,7 @@ const {
   serializeHistoryEntry,
   historyToCsv,
   escapeHtml,
+  runtimeLocationLabel,
 } = require('../../static/winner_client.js');
 
 function makeLandmarks() {
@@ -51,6 +52,13 @@ test('extractRequiredLandmarks clamps x and y and never transmits z', () => {
 
   const landmarks = extractRequiredLandmarks(lms);
   assert.deepEqual(landmarks['1'], [0, 1]);
+});
+
+test('runtimeLocationLabel identifies local hosts and online render host', () => {
+  for (const hostname of ['127.0.0.1', 'localhost', 'LOCALHOST', '::1', '[::1]']) {
+    assert.equal(runtimeLocationLabel(hostname), 'LOCAL');
+  }
+  assert.equal(runtimeLocationLabel('driver-drowsiness-monitor-winner.onrender.com'), 'ONLINE');
 });
 
 test('LandmarkBatcher flushes at max four frames and after 200ms', () => {

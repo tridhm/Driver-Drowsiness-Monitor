@@ -24,6 +24,11 @@
     return Number.isFinite(n) ? n.toFixed(digits) : '-';
   }
 
+  function runtimeLocationLabel(hostname) {
+    const host = String(hostname || '').trim().toLowerCase().replace(/^\[|\]$/g, '');
+    return host === 'localhost' || host === '127.0.0.1' || host === '::1' ? 'LOCAL' : 'ONLINE';
+  }
+
   function clamp01(value) {
     return Math.min(1, Math.max(0, value));
   }
@@ -551,6 +556,7 @@
     serializeHistoryEntry,
     historyToCsv,
     escapeHtml,
+    runtimeLocationLabel,
     normalizeState,
   };
 });

@@ -363,6 +363,7 @@ class WinnerWebApiTests(unittest.TestCase):
         self.assertIn("Sleepy probability", html)
         self.assertIn("PERCLOS 6s", html)
         self.assertIn('id="runtimeLocation"', html)
+        self.assertRegex(html, r"\.runtime-location\s*\{[^}]*letter-spacing\s*:\s*0\s*;")
         self.assertIn("runtimeLocationLabel(window.location.hostname)", html)
         self.assertIn("dynamic_total_progress", html)
         self.assertIn("FPS xử lý thay đổi ngay từ frame tiếp theo", html)

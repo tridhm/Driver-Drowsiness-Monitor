@@ -168,8 +168,19 @@ def best_effort_lan_ip() -> str | None:
     return None
 
 
+def local_access_host(bind_host: str) -> str:
+    if bind_host == "::1":
+        return "[::1]"
+    if bind_host == "0.0.0.0":
+        return "127.0.0.1"
+    return bind_host
+
+
 def run(options: LocalOptions) -> int:
-    from werkzeug.serving import make_server
+    try:
+        from werkzeug.serving import make_server
+    except ImportError as exc:
+        raise LocalLaunchError(f"Local web server dependency is not available: {exc}") from exc
 
     app, runtime = build_local_app(options.root)
     server, selected_port = bind_server(
@@ -182,7 +193,7 @@ def run(options: LocalOptions) -> int:
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
     try:
-        local_url = f"http://127.0.0.1:{selected_port}/"
+        local_url = f"http://{local_access_host(options.host)}:{selected_port}/"
         health = wait_for_health(local_url + "api/healthz")
         print(f"Local URL: {local_url}")
         print(f"Profile: {health['profile']}")

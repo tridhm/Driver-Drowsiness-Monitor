@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import builtins
 import io
 import json
 import socket
@@ -16,6 +17,8 @@ from local_app import (
     LocalOptions,
     bind_server,
     build_local_app,
+    local_access_host,
+    main,
     open_browser,
     parse_options,
     port_candidates,
@@ -138,6 +141,12 @@ class BindServerTests(unittest.TestCase):
 
 
 class LocalLifecycleTests(unittest.TestCase):
+    def test_local_access_host_matches_bind_host(self) -> None:
+        self.assertEqual(local_access_host("::1"), "[::1]")
+        self.assertEqual(local_access_host("0.0.0.0"), "127.0.0.1")
+        self.assertEqual(local_access_host("127.0.0.1"), "127.0.0.1")
+        self.assertEqual(local_access_host("localhost"), "localhost")
+
     def test_build_local_app_always_uses_recommended(self) -> None:
         app, runtime = build_local_app(ROOT)
 
@@ -198,6 +207,23 @@ class LocalLifecycleTests(unittest.TestCase):
         self.assertIn("trusted private network only", text)
         self.assertIn("camera access from another device may require HTTPS", text)
         self.assertIn("LAN URL: unavailable", text)
+
+    def test_main_reports_missing_werkzeug_concisely(self) -> None:
+        real_import = builtins.__import__
+
+        def fake_import(name: str, *args: object, **kwargs: object) -> object:
+            if name == "werkzeug.serving":
+                raise ModuleNotFoundError("No module named 'werkzeug'")
+            return real_import(name, *args, **kwargs)
+
+        stderr = io.StringIO()
+        with mock.patch("builtins.__import__", side_effect=fake_import), \
+                mock.patch("sys.stderr", stderr):
+            result = main(["--no-browser"])
+
+        self.assertEqual(result, 1)
+        self.assertIn("Local startup failed:", stderr.getvalue())
+        self.assertIn("werkzeug", stderr.getvalue())
 
     def test_subprocess_serves_contract_and_releases_port(self) -> None:
         port = free_port()

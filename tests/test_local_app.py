@@ -1,17 +1,34 @@
 from __future__ import annotations
 
+import io
+import json
+import socket
+import subprocess
+import sys
+import time
 import unittest
 from pathlib import Path
+from unittest import mock
+from urllib.request import urlopen
 
 from local_app import (
     LocalLaunchError,
     bind_server,
+    build_local_app,
+    open_browser,
     parse_options,
     port_candidates,
 )
 
 
 ROOT = Path(__file__).resolve().parents[1]
+EXPECTED_MODEL_HASH = "8958d2d4dd0a0757b5a922adb11df263144e253873909ac8816cd26c248bc89c"
+
+
+def free_port() -> int:
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return int(sock.getsockname()[1])
 
 
 class LocalOptionsTests(unittest.TestCase):
@@ -116,6 +133,94 @@ class BindServerTests(unittest.TestCase):
             )
 
         self.assertIn("5000-5010", str(context.exception))
+
+
+class LocalLifecycleTests(unittest.TestCase):
+    def test_build_local_app_always_uses_recommended(self) -> None:
+        app, runtime = build_local_app(ROOT)
+
+        self.assertEqual(runtime.profile_name, "recommended")
+        self.assertEqual(runtime.bundle.sha256, EXPECTED_MODEL_HASH)
+        self.assertIs(app.extensions["winner_runtime"], runtime)
+
+    def test_runtime_startup_error_is_concise(self) -> None:
+        with mock.patch("runtime.web_runtime.WinnerRuntime", side_effect=ValueError("bad model")):
+            with self.assertRaises(LocalLaunchError) as context:
+                build_local_app(ROOT)
+
+        self.assertIn("bad model", str(context.exception))
+
+    def test_open_browser_failure_is_non_fatal(self) -> None:
+        output = io.StringIO()
+
+        result = open_browser("http://127.0.0.1:5000/", opener=lambda _url: False, output=output)
+
+        self.assertFalse(result)
+        self.assertIn("Open this URL manually", output.getvalue())
+
+    def test_subprocess_serves_contract_and_releases_port(self) -> None:
+        port = free_port()
+        process = subprocess.Popen(
+            [
+                sys.executable,
+                str(ROOT / "local_app.py"),
+                "--no-browser",
+                "--port",
+                str(port),
+            ],
+            cwd=ROOT.parent,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            health = None
+            deadline = time.monotonic() + 30.0
+            while time.monotonic() < deadline:
+                if process.poll() is not None:
+                    stdout, stderr = process.communicate(timeout=1.0)
+                    self.fail(f"local_app.py exited early with {process.returncode}\nSTDOUT:\n{stdout}\nSTDERR:\n{stderr}")
+                try:
+                    with urlopen(f"http://127.0.0.1:{port}/api/healthz", timeout=2.0) as response:
+                        health = json.load(response)
+                    if health.get("ready") is True:
+                        break
+                except (OSError, ValueError, json.JSONDecodeError):
+                    time.sleep(0.1)
+
+            self.assertIsNotNone(health)
+            self.assertTrue(health["ready"])
+            self.assertEqual(health["profile"], "recommended")
+            self.assertEqual(health["model_hash"], EXPECTED_MODEL_HASH)
+            self.assertEqual(health["runtime_threshold"], 0.55)
+            with urlopen(f"http://127.0.0.1:{port}/api/v1/runtime-info", timeout=2.0) as response:
+                info = json.load(response)
+            self.assertEqual(info["landmark_count"], 20)
+            self.assertEqual(info["capture_stall_tolerance_ms"], 3000)
+            self.assertFalse(info["video_upload_enabled"])
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try:
+                    process.wait(timeout=10.0)
+                except subprocess.TimeoutExpired:
+                    process.kill()
+                    process.wait(timeout=10.0)
+            try:
+                process.communicate(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.communicate(timeout=1.0)
+            deadline = time.monotonic() + 5.0
+            while True:
+                try:
+                    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+                        sock.bind(("127.0.0.1", port))
+                    break
+                except OSError:
+                    if time.monotonic() >= deadline:
+                        raise
+                    time.sleep(0.1)
 
 
 if __name__ == "__main__":

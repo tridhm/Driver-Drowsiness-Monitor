@@ -1,5 +1,6 @@
 const { defineConfig, devices } = require('@playwright/test');
 const fs = require('fs');
+const os = require('os');
 const path = require('path');
 
 const winVenvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
@@ -15,9 +16,12 @@ if (!Number.isInteger(port) || port < 1024 || port > 65535) {
 }
 const baseURL = `http://127.0.0.1:${port}`;
 const quoteArg = (value) => JSON.stringify(value);
+const outputDir = process.env.DMS_PLAYWRIGHT_OUTPUT_DIR
+  || path.join(os.tmpdir(), 'dms-playwright-output');
 
 module.exports = defineConfig({
   testDir: 'tests/browser',
+  outputDir,
   timeout: 60_000,
   workers: 1,
   fullyParallel: false,

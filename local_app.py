@@ -28,9 +28,6 @@ class LocalOptions:
     profile_name: str = "recommended"
 
 
-ServerFactory = Callable[[str, int, object], object]
-
-
 def _valid_port(value: str) -> int:
     try:
         port = int(value)
@@ -76,31 +73,27 @@ def parse_options(argv: Sequence[str] | None = None) -> LocalOptions:
     )
 
 
-def port_candidates(options: LocalOptions) -> Iterable[int]:
-    if options.explicit_port:
-        return (options.port,)
-    return range(DEFAULT_PORT, LAST_FALLBACK_PORT + 1)
-
-
-def _default_server_factory(host: str, port: int, app: object, *, threaded: bool) -> object:
-    from werkzeug.serving import make_server
-
-    return make_server(host, port, app, threaded=threaded)
+def port_candidates(preferred_port: int, explicit: bool) -> Iterable[int]:
+    if explicit:
+        return (preferred_port,)
+    return range(preferred_port, LAST_FALLBACK_PORT + 1)
 
 
 def bind_server(
-    options: LocalOptions,
-    app: object,
     *,
-    server_factory: Callable[..., object] = _default_server_factory,
-) -> object:
+    app: object,
+    host: str,
+    preferred_port: int,
+    explicit_port: bool,
+    server_factory: Callable[..., object],
+) -> tuple[object, int]:
     last_error: OSError | None = None
-    for port in port_candidates(options):
+    for port in port_candidates(preferred_port, explicit=explicit_port):
         try:
-            return server_factory(options.host, port, app, threaded=True)
+            return server_factory(host, port, app, threaded=True), port
         except OSError as exc:
             last_error = exc
-            if options.explicit_port:
+            if explicit_port:
                 raise LocalLaunchError(f"Port {port} is not available.") from exc
 
     message = f"No available localhost port in {DEFAULT_PORT}-{LAST_FALLBACK_PORT}."

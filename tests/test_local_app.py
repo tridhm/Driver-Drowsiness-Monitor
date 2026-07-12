@@ -50,8 +50,8 @@ class LocalOptionsTests(unittest.TestCase):
                     parse_options(["--port", port])
 
     def test_port_candidates_are_bounded(self) -> None:
-        self.assertEqual(list(port_candidates(parse_options([]))), list(range(5000, 5011)))
-        self.assertEqual(list(port_candidates(parse_options(["--port", "5099"]))), [5099])
+        self.assertEqual(list(port_candidates(5000, explicit=False)), list(range(5000, 5011)))
+        self.assertEqual(list(port_candidates(5099, explicit=True)), [5099])
 
 
 class BindServerTests(unittest.TestCase):
@@ -66,9 +66,16 @@ class BindServerTests(unittest.TestCase):
                 raise OSError("busy")
             return expected_server
 
-        server = bind_server(parse_options([]), app, server_factory=factory)
+        server, selected_port = bind_server(
+            app=app,
+            host="127.0.0.1",
+            preferred_port=5000,
+            explicit_port=False,
+            server_factory=factory,
+        )
 
         self.assertIs(server, expected_server)
+        self.assertEqual(selected_port, 5001)
         self.assertEqual(calls, [
             ("127.0.0.1", 5000, app, True),
             ("127.0.0.1", 5001, app, True),
@@ -79,7 +86,13 @@ class BindServerTests(unittest.TestCase):
             raise OSError("busy")
 
         with self.assertRaises(LocalLaunchError) as context:
-            bind_server(parse_options(["--port", "5099"]), object(), server_factory=factory)
+            bind_server(
+                app=object(),
+                host="127.0.0.1",
+                preferred_port=5099,
+                explicit_port=True,
+                server_factory=factory,
+            )
 
         self.assertIn("5099", str(context.exception))
 
@@ -88,7 +101,13 @@ class BindServerTests(unittest.TestCase):
             raise OSError("busy")
 
         with self.assertRaises(LocalLaunchError) as context:
-            bind_server(parse_options([]), object(), server_factory=factory)
+            bind_server(
+                app=object(),
+                host="127.0.0.1",
+                preferred_port=5000,
+                explicit_port=False,
+                server_factory=factory,
+            )
 
         self.assertIn("5000-5010", str(context.exception))
 

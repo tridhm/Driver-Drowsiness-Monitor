@@ -6,9 +6,11 @@
   },
   "scripts": {
     "test": "npm run test:js",
-    "test:js": "node --test tests/js/*.test.js"
+    "test:js": "node --test tests/js/*.test.js",
+    "test:browser": "playwright test"
   },
   "devDependencies": {
-    "@mediapipe/face_mesh": "0.4.1633559619"
+    "@mediapipe/face_mesh": "0.4.1633559619",
+    "@playwright/test": "1.61.1"
   }
 }

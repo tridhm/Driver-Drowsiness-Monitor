@@ -31,6 +31,31 @@ ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_MODEL_HASH = "8958d2d4dd0a0757b5a922adb11df263144e253873909ac8816cd26c248bc89c"
 
 
+class LocalDocumentationTests(unittest.TestCase):
+    def test_docs_describe_canonical_local_winner(self) -> None:
+        readme_run = (ROOT / "README_RUN.md").read_text(encoding="utf-8")
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+
+        for expected in (
+            "run_local.cmd",
+            "python local_app.py",
+            "127.0.0.1",
+            "--lan",
+            "--port",
+            "--no-browser",
+            "recommended",
+            "Video stays in the browser",
+            "Python 3.12",
+        ):
+            with self.subTest(expected=expected):
+                self.assertIn(expected, readme_run)
+
+        self.assertNotIn("--decision-engine fsm", readme_run)
+        self.assertNotIn("Upload & Start", readme_run)
+        self.assertIn("README_RUN.md", readme)
+        self.assertIn("camera_hybrid", readme)
+
+
 def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
         sock.bind(("127.0.0.1", 0))

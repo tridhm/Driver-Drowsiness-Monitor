@@ -1,80 +1,42 @@
-# DMS Web Package - Clean Video Overlay + Robust Head Nod
+# Run the Canonical Winner Web App Locally
 
-## Chạy web
+This is the canonical localhost winner runtime. It uses the same browser FaceMesh bundle as the deployed app, sends the 20-landmark API payload to the Flask feature pipeline, and runs the winner model through `camera_hybrid` with the `recommended` profile as deployed.
 
-```powershell
-cd D:\drowsiness_detection-main\dms_web_train_package
-python web_server.py --source webcam --decision-engine fsm
-```
+## Windows
 
-Mở trình duyệt:
-
-```text
-http://127.0.0.1:8000
-```
-
-## Cách dùng video
-
-Trên web chọn video bằng nút **Choose File**, sau đó bấm **Upload & Start**.
-Không cần nhập đường dẫn video thủ công.
-
-## Thay đổi trong bản này
-
-- Video không còn hiện đè các thông số EAR/MAR/PERCLOS/FPS.
-- Video chỉ vẽ các phần nhận diện:
-  - vùng mắt,
-  - vùng miệng,
-  - đường định hướng/góc đầu.
-- Toàn bộ thông số realtime được đưa sang panel bên phải.
-- Giao diện được nén để hạn chế phải cuộn màn hình; phần lý do cảnh báo hiện dạng tag nhỏ.
-- Head nod đã được sửa để giảm cảnh báo sai do xe xóc:
-  - không dùng pitch lớn đơn lẻ để kết luận gật đầu,
-  - không dùng pitch velocity đơn lẻ để leo thang trạng thái,
-  - chỉ kích hoạt head nod khi có đủ 3 điều kiện: góc đầu phù hợp, có chuyển động đầu gần đây, và có ngữ cảnh buồn ngủ từ mắt/PERCLOS.
-
-## Dừng chương trình
-
-Trong PowerShell nhấn:
+Double-click `run_local.cmd` from this directory, or run it from Command Prompt or PowerShell:
 
 ```powershell
-Ctrl + C
+.\run_local.cmd
 ```
 
+The first run creates `.venv` with Python 3.12 and installs `requirements.txt`, so initial setup needs internet access unless those dependencies are already available locally. After setup, the self-hosted assets, model, config, and audio can operate without external network access.
 
-## Chạy cho điện thoại / máy khác trong cùng Wi-Fi
+The app opens `http://127.0.0.1:5000/`. If port 5000 is busy, the launcher tries 5001 through 5010.
 
-Bản này mặc định chạy Flask với `host=0.0.0.0`, nên các thiết bị cùng mạng Wi-Fi có thể truy cập bằng IP LAN của máy tính.
+## Cross-platform
 
-1. Chạy server:
+Use Python directly when you are not using the Windows wrapper:
 
-```powershell
-python web_server.py --source webcam --decision-engine fsm
+```bash
+python local_app.py
+python local_app.py --no-browser
+python local_app.py --port 5099
+python local_app.py --lan
 ```
 
-2. Xem dòng terminal dạng:
+By default the app binds to loopback only at `127.0.0.1`. `--lan` binds to the private network with no authentication, so use it only on a trusted private network. Remote camera access over plain HTTP may be blocked by browsers because camera APIs require a secure context, usually HTTPS, outside localhost.
 
-```text
-[WEB] Network: http://192.168.x.x:8000
-```
+## Privacy
 
-3. Trên điện thoại cùng Wi-Fi, mở địa chỉ đó trong Chrome/Safari.
+Video stays in the browser. Only normalized landmark JSON goes to local Flask. The app does not store raw landmarks, images, or video.
 
-Nếu không vào được, mở Windows Defender Firewall và cho phép Python truy cập Private network, hoặc chạy:
+Camera mode runs live in the browser. File mode uses a browser object URL for local playback; the selected file is not uploaded.
 
-```powershell
-netsh advfirewall firewall add rule name="DMS Web 8000" dir=in action=allow protocol=TCP localport=8000
-```
+## Stop
 
-## Link public qua Internet
+Press `Ctrl+C` in the terminal that launched the app.
 
-Cách đơn giản khi demo là dùng ngrok:
+## Boundary
 
-```powershell
-ngrok http 8000
-```
-
-Ngrok sẽ tạo một URL HTTPS public trỏ về web local. Chỉ dùng để demo, không nên upload dữ liệu nhạy cảm khi mở public link.
-
-## Âm thanh cảnh báo
-
-File `static/alert.wav` được phát trong trình duyệt khi trạng thái là `DROWSY` hoặc `CRITICAL`. Trên điện thoại, trình duyệt thường yêu cầu người dùng bấm vào trang một lần trước khi cho phép phát âm thanh.
+The localhost web app is the canonical offline winner runtime after initial dependencies are installed. Older OpenCV and Python desktop paths are research or legacy tools, not the deployed winner runtime.

@@ -46,12 +46,19 @@ class LocalDocumentationTests(unittest.TestCase):
             "recommended",
             "Video stays in the browser",
             "Python 3.12",
+            "python3 -m venv .venv",
+            "python -m pip install -r requirements.txt",
+            "Raw landmarks, images, and video are not persisted",
+            "Flask keeps transient in-memory session state while active",
+            "browser may persist derived event history locally",
+            "not raw media or landmarks",
         ):
             with self.subTest(expected=expected):
                 self.assertIn(expected, readme_run)
 
         self.assertNotIn("--decision-engine fsm", readme_run)
         self.assertNotIn("Upload & Start", readme_run)
+        self.assertNotIn("does not store raw landmarks", readme_run)
         self.assertIn("README_RUN.md", readme)
         self.assertIn("camera_hybrid", readme)
 

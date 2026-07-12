@@ -1,5 +1,10 @@
 const { test, expect } = require('@playwright/test');
 
+const REQUIRED_LANDMARK_INDICES = [
+  1, 13, 14, 33, 61, 133, 144, 152, 153, 158,
+  160, 263, 291, 362, 373, 380, 385, 387, 468, 473,
+];
+
 function isLocalRequest(url) {
   if (url.startsWith('blob:') || url.startsWith('data:')) return true;
   const parsed = new URL(url);
@@ -84,6 +89,56 @@ test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offlin
   expect(page.consoleErrors).toEqual([]);
 });
 
+test('stubbed camera sends deterministic detected landmark payload without media bytes', async ({ page }) => {
+  await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
+    await route.fulfill({
+      contentType: 'application/javascript',
+      body: `
+        const landmarks = Array.from({ length: 478 }, (_, index) => ({
+          x: ((index % 20) + 0.25) / 20.5,
+          y: ((Math.floor(index / 20) % 20) + 0.5) / 20.5,
+          z: 0.99
+        }));
+        window.FaceMesh = class {
+          constructor() { this.callback = () => {}; }
+          setOptions() {}
+          onResults(callback) { this.callback = callback; }
+          async initialize() {}
+          async send() { this.callback({ multiFaceLandmarks: [landmarks] }); }
+        };
+      `,
+    });
+  });
+
+  await page.goto('/');
+  await expect(page.locator('#runtimeLocation')).toHaveText('LOCAL');
+  await page.locator('#startBtn').click();
+  await expect(page.locator('#topStatus')).toContainText('MediaPipe ready', { timeout: 15_000 });
+
+  await expect.poll(() => page.framePayloads
+    .flatMap((payload) => payload.frames)
+    .filter((frame) => frame.face_detected).length, { timeout: 15_000 }).toBeGreaterThan(0);
+
+  for (const payload of page.framePayloads) expectNoMediaBody(payload);
+
+  const detected = page.framePayloads
+    .flatMap((payload) => payload.frames)
+    .find((frame) => frame.face_detected);
+  expect(Object.keys(detected.landmarks).sort()).toEqual(REQUIRED_LANDMARK_INDICES.map(String).sort());
+  for (const coords of Object.values(detected.landmarks)) {
+    expect(coords).toHaveLength(2);
+    expect(Number.isFinite(coords[0])).toBe(true);
+    expect(Number.isFinite(coords[1])).toBe(true);
+    expect(coords[0]).toBeGreaterThanOrEqual(0);
+    expect(coords[0]).toBeLessThanOrEqual(1);
+    expect(coords[1]).toBeGreaterThanOrEqual(0);
+    expect(coords[1]).toBeLessThanOrEqual(1);
+  }
+  expectNoMediaBody(detected);
+  expect(page.externalRequests).toEqual([]);
+  expect(page.consoleErrors).toEqual([]);
+});
+
 test('file mode creates a local object URL and never uploads media bodies', async ({ page }) => {
   const fixtureMarker = 'local-browser-only-fixture-7f3a';
 
@@ -104,6 +159,7 @@ test('file mode creates a local object URL and never uploads media bodies', asyn
 
   await page.addInitScript(() => {
     window.__objectUrls = [];
+    let syntheticCurrentTime = 0;
     const nativeCreateObjectURL = URL.createObjectURL.bind(URL);
     URL.createObjectURL = (value) => {
       const objectUrl = nativeCreateObjectURL(value);
@@ -114,6 +170,16 @@ test('file mode creates a local object URL and never uploads media bodies', asyn
     Object.defineProperty(HTMLMediaElement.prototype, 'readyState', { configurable: true, get: () => 4 });
     Object.defineProperty(HTMLVideoElement.prototype, 'videoWidth', { configurable: true, get: () => 320 });
     Object.defineProperty(HTMLVideoElement.prototype, 'videoHeight', { configurable: true, get: () => 240 });
+    Object.defineProperty(HTMLVideoElement.prototype, 'currentTime', {
+      configurable: true,
+      get: () => {
+        syntheticCurrentTime += 0.05;
+        return syntheticCurrentTime;
+      },
+      set: (value) => {
+        syntheticCurrentTime = Number(value) || 0;
+      },
+    });
     HTMLMediaElement.prototype.load = function load() {
       setTimeout(() => {
         this.dispatchEvent(new Event('loadedmetadata'));
@@ -136,6 +202,7 @@ test('file mode creates a local object URL and never uploads media bodies', asyn
   });
 
   await expect.poll(() => page.evaluate(() => window.__objectUrls.length), { timeout: 15_000 }).toBeGreaterThan(0);
+  await expect.poll(() => page.framePayloads.length, { timeout: 15_000 }).toBeGreaterThan(0);
   for (const requestBody of page.requestBodies) {
     expect(requestBody.url).not.toContain('/api/upload');
     expect(requestBody.body.toLowerCase()).not.toContain('video');

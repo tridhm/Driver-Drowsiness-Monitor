@@ -2,8 +2,19 @@ const { defineConfig, devices } = require('@playwright/test');
 const fs = require('fs');
 const path = require('path');
 
-const venvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
-const python = process.platform === 'win32' && fs.existsSync(venvPython) ? venvPython : 'python';
+const winVenvPython = path.join(__dirname, '.venv', 'Scripts', 'python.exe');
+const posixVenvPython = path.join(__dirname, '.venv', 'bin', 'python');
+const python = process.env.PYTHON
+  || (fs.existsSync(winVenvPython) ? winVenvPython : null)
+  || (fs.existsSync(posixVenvPython) ? posixVenvPython : null)
+  || (process.platform === 'win32' ? 'python' : 'python3');
+
+const port = Number(process.env.DMS_PLAYWRIGHT_PORT || 5011);
+if (!Number.isInteger(port) || port < 1024 || port > 65535) {
+  throw new Error('DMS_PLAYWRIGHT_PORT must be an integer between 1024 and 65535.');
+}
+const baseURL = `http://127.0.0.1:${port}`;
+const quoteArg = (value) => JSON.stringify(value);
 
 module.exports = defineConfig({
   testDir: 'tests/browser',
@@ -12,7 +23,7 @@ module.exports = defineConfig({
   fullyParallel: false,
   reporter: 'line',
   use: {
-    baseURL: 'http://127.0.0.1:5011',
+    baseURL,
     permissions: ['camera'],
     ...devices['Desktop Chrome'],
     launchOptions: {
@@ -23,9 +34,9 @@ module.exports = defineConfig({
     },
   },
   webServer: {
-    command: `"${python}" local_app.py --no-browser --port 5011`,
-    url: 'http://127.0.0.1:5011/api/healthz',
+    command: `${quoteArg(python)} local_app.py --no-browser --port ${port}`,
+    url: `${baseURL}/api/healthz`,
     timeout: 120_000,
-    reuseExistingServer: !process.env.CI,
+    reuseExistingServer: false,
   },
 });

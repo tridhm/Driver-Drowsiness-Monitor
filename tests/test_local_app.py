@@ -36,6 +36,20 @@ def free_port() -> int:
         return int(sock.getsockname()[1])
 
 
+class WindowsWrapperTests(unittest.TestCase):
+    def test_wrapper_is_relative_pins_python_312_and_forwards_arguments(self) -> None:
+        script = (ROOT / "run_local.cmd").read_text(encoding="utf-8")
+
+        self.assertIn('cd /d "%~dp0"', script)
+        self.assertIn(r".venv\Scripts\python.exe", script)
+        self.assertIn("py -3.12", script)
+        self.assertIn("sys.version_info[:2] == (3, 12)", script)
+        self.assertIn("-m venv .venv", script)
+        self.assertIn("-m pip install -r requirements.txt", script)
+        self.assertIn('local_app.py" %*', script)
+        self.assertNotIn(r"D:\\", script)
+
+
 class LocalOptionsTests(unittest.TestCase):
     def test_defaults_are_loopback_recommended_and_auto_browser(self) -> None:
         options = parse_options([])

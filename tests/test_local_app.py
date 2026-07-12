@@ -62,9 +62,31 @@ class WindowsWrapperTests(unittest.TestCase):
         self.assertIn("if errorlevel 1 goto wrong_python", script)
         self.assertIn("goto run", script)
 
+    def test_existing_wrapper_venv_recovers_missing_dependencies_before_run(self) -> None:
+        script = (ROOT / "run_local.cmd").read_text(encoding="utf-8")
+
+        self.assertIn(":install_dependencies", script)
+        self.assertIn(
+            '"%VENV_PY%" -c "import flask, joblib, numpy, cv2, sklearn"',
+            script,
+        )
+        self.assertIn("if errorlevel 1 goto install_dependencies", script)
+        self.assertIn("-m pip install -r requirements.txt", script)
+
+    def test_wrapper_skips_pause_only_for_noninteractive_environment(self) -> None:
+        script = (ROOT / "run_local.cmd").read_text(encoding="utf-8")
+
+        self.assertIn(":maybe_pause", script)
+        self.assertIn("if defined CI exit /b 0", script)
+        self.assertIn("if defined RUN_LOCAL_NO_PAUSE exit /b 0", script)
+        self.assertIn("call :maybe_pause", script)
+        self.assertIn("pause", script)
+
     @unittest.skipUnless(os.name == "nt", "Windows wrapper smoke only runs on Windows")
     def test_wrapper_subprocess_serves_contract_and_releases_port(self) -> None:
         port = free_port()
+        environment = os.environ.copy()
+        environment["RUN_LOCAL_NO_PAUSE"] = "1"
         process = subprocess.Popen(
             [
                 "cmd",
@@ -75,6 +97,7 @@ class WindowsWrapperTests(unittest.TestCase):
                 str(port),
             ],
             cwd=ROOT,
+            env=environment,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,
@@ -126,6 +149,27 @@ class WindowsWrapperTests(unittest.TestCase):
                     if time.monotonic() >= deadline:
                         raise
                     time.sleep(0.1)
+
+    @unittest.skipUnless(os.name == "nt", "Windows wrapper smoke only runs on Windows")
+    def test_wrapper_invalid_arguments_exit_without_pause_when_disabled(self) -> None:
+        environment = os.environ.copy()
+        environment["RUN_LOCAL_NO_PAUSE"] = "1"
+
+        result = subprocess.run(
+            ["cmd", "/c", "run_local.cmd", "--definitely-invalid-option"],
+            cwd=ROOT,
+            env=environment,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            timeout=10.0,
+            check=False,
+        )
+
+        self.assertEqual(result.returncode, 2)
+        combined_output = result.stdout + result.stderr
+        self.assertIn("--definitely-invalid-option", combined_output)
+        self.assertNotIn("Press any key", combined_output)
 
 
 class LocalOptionsTests(unittest.TestCase):

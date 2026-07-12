@@ -23,6 +23,9 @@ goto missing_python
 if errorlevel 1 goto wrong_python
 %PYTHON_CMD% -m venv .venv
 if errorlevel 1 goto setup_failed
+goto install_dependencies
+
+:install_dependencies
 "%VENV_PY%" -m pip install --upgrade pip
 if errorlevel 1 goto setup_failed
 "%VENV_PY%" -m pip install -r requirements.txt
@@ -32,6 +35,8 @@ goto run
 :verify_venv
 "%VENV_PY%" -c "import sys; raise SystemExit(0 if sys.version_info[:2] == (3, 12) else 1)"
 if errorlevel 1 goto wrong_python
+"%VENV_PY%" -c "import flask, joblib, numpy, cv2, sklearn"
+if errorlevel 1 goto install_dependencies
 goto run
 
 :run
@@ -39,21 +44,27 @@ goto run
 set "APP_EXIT=%ERRORLEVEL%"
 if not "%APP_EXIT%"=="0" (
     echo Local app exited with code %APP_EXIT%.
-    pause
+    call :maybe_pause
 )
 exit /b %APP_EXIT%
 
 :missing_python
 echo Python 3.12 was not found. Install Python 3.12, then run this file again.
-pause
+call :maybe_pause
 exit /b 1
 
 :wrong_python
 echo Python was found, but this app requires Python 3.12.
-pause
+call :maybe_pause
 exit /b 1
 
 :setup_failed
 echo Failed to prepare the local Python environment.
-pause
+call :maybe_pause
 exit /b 1
+
+:maybe_pause
+if defined CI exit /b 0
+if defined RUN_LOCAL_NO_PAUSE exit /b 0
+pause
+exit /b 0

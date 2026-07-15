@@ -96,6 +96,66 @@ test('fake camera uses self-hosted MediaPipe and sends landmark-only JSON offlin
   expect(page.consoleErrors).toEqual([]);
 });
 
+test('camera video stays hardware-presented while canvas only paints annotations', async ({ page }) => {
+  await page.addInitScript(() => {
+    window.__drawImageCalls = 0;
+    const nativeDrawImage = CanvasRenderingContext2D.prototype.drawImage;
+    CanvasRenderingContext2D.prototype.drawImage = function drawImageProbe(...args) {
+      window.__drawImageCalls += 1;
+      return nativeDrawImage.apply(this, args);
+    };
+  });
+
+  await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
+    await route.fulfill({
+      contentType: 'application/javascript',
+      body: `
+        const landmarks = Array.from({ length: 478 }, (_, index) => ({
+          x: ((index % 20) + 0.25) / 20.5,
+          y: ((Math.floor(index / 20) % 20) + 0.5) / 20.5,
+          z: 0
+        }));
+        window.__faceMeshSendCount = 0;
+        window.FaceMesh = class {
+          constructor() { this.callback = () => {}; }
+          setOptions() {}
+          onResults(callback) { this.callback = callback; }
+          async initialize() {}
+          async send() {
+            window.__faceMeshSendCount += 1;
+            this.callback({ multiFaceLandmarks: [landmarks] });
+          }
+        };
+      `,
+    });
+  });
+
+  await page.goto('/');
+  await page.locator('#startBtn').click();
+  await expect.poll(() => page.evaluate(() => window.__faceMeshSendCount), { timeout: 15_000 }).toBeGreaterThan(2);
+
+  const presentation = await page.evaluate(() => {
+    const video = document.getElementById('camera');
+    const canvas = document.getElementById('view');
+    const videoRect = video.getBoundingClientRect();
+    const canvasRect = canvas.getBoundingClientRect();
+    return {
+      drawImageCalls: window.__drawImageCalls,
+      videoDisplay: getComputedStyle(video).display,
+      canvasPosition: getComputedStyle(canvas).position,
+      sameBounds: Math.abs(videoRect.x - canvasRect.x) < 0.5
+        && Math.abs(videoRect.y - canvasRect.y) < 0.5
+        && Math.abs(videoRect.width - canvasRect.width) < 0.5
+        && Math.abs(videoRect.height - canvasRect.height) < 0.5,
+    };
+  });
+
+  expect(presentation.videoDisplay).not.toBe('none');
+  expect(presentation.canvasPosition).toBe('absolute');
+  expect(presentation.sameBounds).toBe(true);
+  expect(presentation.drawImageCalls).toBe(0);
+});
+
 test('slow MediaPipe does not add target interval after inference completes', async ({ page }) => {
   await page.route('**/static/vendor/face_mesh/face_mesh.js', async (route) => {
     await route.fulfill({

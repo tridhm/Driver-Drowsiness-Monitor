@@ -137,12 +137,17 @@ test('camera video stays hardware-presented while canvas only paints annotations
   const presentation = await page.evaluate(() => {
     const video = document.getElementById('camera');
     const canvas = document.getElementById('view');
+    const wrapper = document.querySelector('.video-wrap');
     const videoRect = video.getBoundingClientRect();
     const canvasRect = canvas.getBoundingClientRect();
     return {
       drawImageCalls: window.__drawImageCalls,
       videoDisplay: getComputedStyle(video).display,
+      videoZIndex: getComputedStyle(video).zIndex,
       canvasPosition: getComputedStyle(canvas).position,
+      canvasZIndex: getComputedStyle(canvas).zIndex,
+      canvasDesynchronized: canvas.getContext('2d').getContextAttributes().desynchronized,
+      wrapperIsolation: getComputedStyle(wrapper).isolation,
       sameBounds: Math.abs(videoRect.x - canvasRect.x) < 0.5
         && Math.abs(videoRect.y - canvasRect.y) < 0.5
         && Math.abs(videoRect.width - canvasRect.width) < 0.5
@@ -151,7 +156,11 @@ test('camera video stays hardware-presented while canvas only paints annotations
   });
 
   expect(presentation.videoDisplay).not.toBe('none');
+  expect(presentation.videoZIndex).toBe('0');
   expect(presentation.canvasPosition).toBe('absolute');
+  expect(presentation.canvasZIndex).toBe('1');
+  expect(presentation.canvasDesynchronized).toBe(false);
+  expect(presentation.wrapperIsolation).toBe('isolate');
   expect(presentation.sameBounds).toBe(true);
   expect(presentation.drawImageCalls).toBe(0);
 });
